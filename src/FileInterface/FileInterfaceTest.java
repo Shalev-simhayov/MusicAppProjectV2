@@ -1,8 +1,6 @@
 package FileInterface;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
@@ -47,9 +45,9 @@ public final class FileInterfaceTest {
             return FileInterface.acceptPath("~").toString().equals(
                     Path.of(home).toAbsolutePath().normalize().toString());
         });
-        err("acceptPath/missing",
-                () -> FileInterface.acceptPath(tmp.resolve("nope").toString()),
-                LyrifyException.class);
+        err(
+                () -> FileInterface.acceptPath(tmp.resolve("nope").toString())
+        );
 
         // -- 2. fileSearch --
         ok("fileSearch/non_recursive", () -> {
@@ -72,7 +70,7 @@ public final class FileInterfaceTest {
         });
         ok("fileSearch/single_file", () -> {
             List<Path> r = FileInterface.fileSearch(mp3, false);
-            return r.size() == 1 && r.get(0).equals(mp3);
+            return r.size() == 1 && r.getFirst().equals(mp3);
         });
         ok("fileSearch/custom_ext", () -> {
             List<Path> r = FileInterface.fileSearch(tmp, true, Set.of(".flac"));
@@ -171,8 +169,8 @@ public final class FileInterfaceTest {
         ok("batchRename/dry_run_no_change", () -> {
             List<RenameResult> results = FileInterface.batchRename(
                     List.of(renameFile), metaMap, "{trackNumber} - {artist} - {title}", true);
-            return !results.get(0).renamed()
-                && results.get(0).proposedPath() != null
+            return !results.getFirst().renamed()
+                && results.getFirst().proposedPath() != null
                 && Files.exists(renameFile);
         });
         ok("batchRename/actual_rename", () -> {
@@ -183,13 +181,13 @@ public final class FileInterfaceTest {
             List<RenameResult> results = FileInterface.batchRename(
                     List.of(toRename), Map.of(toRename.toString(), m),
                     "{trackNumber} - {artist} - {title}", false);
-            return results.get(0).renamed() && !Files.exists(toRename);
+            return results.getFirst().renamed() && !Files.exists(toRename);
         });
         ok("batchRename/skip_no_metadata", () -> {
             List<RenameResult> results = FileInterface.batchRename(
                     List.of(tmp.resolve("ghost.mp3")), Map.of(),
                     "{trackNumber} - {title}", true);
-            return results.get(0).skipped();
+            return results.getFirst().skipped();
         });
         ok("batchRename/skip_target_exists", () -> {
             Path src    = tmp.resolve("src_exist.mp3");
@@ -201,7 +199,7 @@ public final class FileInterfaceTest {
             List<RenameResult> results = FileInterface.batchRename(
                     List.of(src), Map.of(src.toString(), m),
                     "{trackNumber} - {artist} - {title}", false);
-            return results.get(0).skipped() && Files.exists(src);
+            return results.getFirst().skipped() && Files.exists(src);
         });
 
         // -- sanitiseFilename --
@@ -294,13 +292,13 @@ public final class FileInterfaceTest {
         } catch (Exception e) { fail(name, e.toString()); }
     }
 
-    private static void err(String name, Action a, Class<? extends Exception> expected) {
+    private static void err(Action a) {
         try {
             a.run();
-            fail(name, "expected " + expected.getSimpleName() + " but none thrown");
+            fail("acceptPath/missing", "expected " + LyrifyException.class.getSimpleName() + " but none thrown");
         } catch (Exception e) {
-            if (expected.isInstance(e)) pass(name);
-            else fail(name, "expected " + expected.getSimpleName() + " got " + e.getClass().getSimpleName());
+            if (LyrifyException.class.isInstance(e)) pass("acceptPath/missing");
+            else fail("acceptPath/missing", "expected " + LyrifyException.class.getSimpleName() + " got " + e.getClass().getSimpleName());
         }
     }
 
@@ -320,4 +318,4 @@ public final class FileInterfaceTest {
         });
     }
 }
-}
+
