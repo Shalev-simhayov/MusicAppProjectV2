@@ -7,6 +7,7 @@ import java.util.List;
  * Immutable metadata container for a single audio track.
  * Uses a builder for construction; null fields indicate missing data.
  */
+//record for metadata
 public record TrackMetadata(
         String  filepath,
         String  title,
@@ -22,7 +23,7 @@ public record TrackMetadata(
         Long    fileSizeBytes,
         String  lastModified
 ) {
-    //arraylist of the missing fields, creates a copy so 
+    //arraylist of the missing fields, creates a copy so that we dont give immutable data to
     public List<String> missingFields() {
         List<String> missing = new ArrayList<>();
         if (title  == null) missing.add("title");

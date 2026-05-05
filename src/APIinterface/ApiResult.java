@@ -2,31 +2,9 @@ package APIinterface;
 
 import lyrify.TrackMetadata;
 
-/**
- * Shared result wrapper returned by every API client.
- *
- * <p>Every API returns different shaped data, but once parsed we normalise
- * everything into a {@link TrackMetadata} plus a {@code confidence} score.
- * The rest of the pipeline only ever deals with {@code ApiResult} — it never
- * needs to know which API produced it.
- *
- * <p>Confidence is a value between 0.0 and 1.0:
- * <ul>
- *   <li>1.0 — perfect match (e.g. exact title + artist + duration all agree)</li>
- *   <li>0.7 — reasonable match, likely correct but worth checking</li>
- *   <li>0.0 — no useful data returned</li>
- * </ul>
- *
- * <p>Like {@link lyrify.ScanResult}, this is a passive data container — it
- * holds an outcome and lets the caller decide what to do with it.
- * Check {@link #isUsable()} before accessing {@link #metadata()}.
- *
- * @param source      which API produced this result (e.g. "MusicBrainz")
- * @param metadata    the parsed track metadata, or null if the query failed
- * @param confidence  match confidence in range [0.0, 1.0]
- * @param error       human-readable error message, or null on success
- * @param rawJson     the raw JSON string returned by the API, kept for debugging
- */
+// Shared result wrapper returned by every API client.
+// Holds either a TrackMetadata + confidence score, or an error message.
+// Always check isUsable() before accessing metadata().
 public record ApiResult(
         String        source,
         TrackMetadata metadata,

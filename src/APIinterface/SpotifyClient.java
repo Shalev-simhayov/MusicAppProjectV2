@@ -15,36 +15,10 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Queries the Spotify Web API for track metadata.
- *
- * <h2>About Spotify's API</h2>
- * <p>Spotify has the most complete metadata of all our sources — detailed
- * album art, release dates, markets, popularity scores, and more. However
- * it requires OAuth 2.0 authentication via the Client Credentials flow.
- *
- * <h2>Authentication — Client Credentials flow</h2>
- * <p>Unlike user-facing OAuth (which would require the user to log in),
- * the Client Credentials flow is server-to-server: we exchange our
- * {@code clientId} + {@code clientSecret} for a short-lived access token,
- * then attach that token to every API request. Tokens last 1 hour and are
- * automatically refreshed when they expire.
- *
- * <ol>
- *   <li>POST to {@code https://accounts.spotify.com/api/token} with
- *       {@code grant_type=client_credentials} and Basic auth header</li>
- *   <li>Receive {@code access_token} + {@code expires_in} (seconds)</li>
- *   <li>Attach {@code Authorization: Bearer <token>} to all API requests</li>
- * </ol>
- *
- * <h2>Setup</h2>
- * <p>Register a free app at https://developer.spotify.com/dashboard to get
- * a client ID and secret. No user login or special permissions are needed
- * for the search endpoint.
- *
- * <h2>API docs</h2>
- * <p>https://developer.spotify.com/documentation/web-api
- */
+// Queries the Spotify Web API for track metadata.
+// Uses OAuth Client Credentials flow — tokens are fetched and refreshed automatically.
+// Needs a client ID + secret from developer.spotify.com.
+
 public final class SpotifyClient {
 
     // ------------------------------------------------------------------

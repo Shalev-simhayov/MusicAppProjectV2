@@ -16,12 +16,12 @@ public record ScanResult(
         boolean       fromCache,
         String        error
 ) {
-    /** Convenience factory for a successful scan. */
+    // Convenience factory for a successful scan.
     public static ScanResult of(String path, TrackMetadata meta, boolean fromCache) {
         return new ScanResult(path, meta, fromCache, null);
     }
 
-    /** Convenience factory for a failed scan. */
+    // Convenience factory for a failed scan.
     public static ScanResult error(String path, String error) {
         return new ScanResult(path, null, false, error);
     }

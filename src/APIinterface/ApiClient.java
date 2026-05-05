@@ -11,22 +11,9 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Shared HTTP client used by all API implementations.
- *
- * <p>Responsibilities:
- * <ol>
- *   <li>Owns the single {@link HttpClient} instance shared across all API calls</li>
- *   <li>Enforces per-source rate limiting so we don't get blocked</li>
- *   <li>Handles retries on transient failures (429 rate-limited, 503 unavailable)</li>
- *   <li>Provides helper methods for building URLs and encoding query params</li>
- *   <li>Centralises timeout configuration</li>
- * </ol>
- *
- * <p>All API client classes (MusicBrainzClient, SpotifyClient, etc.) hold a
- * reference to one shared instance of this class rather than each creating
- * their own HTTP machinery.
- */
+// Shared HTTP client used by all API implementations.
+// Handles rate limiting, retries with exponential backoff, and URL encoding.
+
 public final class ApiClient {
 
     // ------------------------------------------------------------------

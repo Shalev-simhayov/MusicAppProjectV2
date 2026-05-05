@@ -9,41 +9,10 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Queries the AcoustID API for metadata using audio fingerprinting.
- *
- * <h2>About AcoustID</h2>
- * <p>AcoustID identifies audio by its acoustic fingerprint — a compact
- * mathematical summary of what the audio actually sounds like — rather than
- * relying on filenames or existing tags. This makes it the most reliable
- * source in our pipeline: it can identify a track even if every tag is wrong
- * or missing, as long as the audio content is intact.
- *
- * <h2>How it works</h2>
- * <ol>
- *   <li><b>Fingerprint generation</b> — we run the external {@code fpcalc}
- *       tool (part of Chromaprint) against the audio file. {@code fpcalc}
- *       reads the raw audio waveform and produces two values:
- *       <ul>
- *         <li>{@code duration} — the audio length in seconds</li>
- *         <li>{@code fingerprint} — a long string of comma-separated integers
- *             encoding the acoustic characteristics</li>
- *       </ul></li>
- *   <li><b>API lookup</b> — we send the fingerprint + duration to the AcoustID
- *       web service, which compares it against their database of known
- *       fingerprints and returns matching MusicBrainz recording IDs.</li>
- *   <li><b>Metadata extraction</b> — each matched recording can include
- *       title, artist, and album if we request them via the
- *       {@code meta=recordings+releasegroups} parameter.</li>
- * </ol>
- *
- * <h2>Requirements</h2>
- * <p>{@code fpcalc} must be installed and on the system PATH.
- * Download from: https://acoustid.org/chromaprint
- *
- * <h2>API docs</h2>
- * <p>https://acoustid.org/webservice
- */
+// Identifies audio by fingerprint using AcoustID + Chromaprint (fpcalc).
+// Most reliable source — works even if all existing tags are wrong.
+// Requires fpcalc installed on PATH. Free API key from acoustid.org.
+
 public final class AcoustIdClient {
 
     // ------------------------------------------------------------------
