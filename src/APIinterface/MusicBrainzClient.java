@@ -7,32 +7,9 @@ import org.json.JSONObject;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Queries the MusicBrainz API for track metadata.
- *
- * <h2>About MusicBrainz</h2>
- * <p>MusicBrainz is a free, open music encyclopedia. No API key is required,
- * but they ask all scripts to:
- * <ul>
- *   <li>Send a descriptive {@code User-Agent} header identifying your app</li>
- *   <li>Make no more than 1 request per second (enforced by {@link ApiClient})</li>
- * </ul>
- *
- * <h2>How a query works</h2>
- * <ol>
- *   <li>We build a Lucene query string from whatever metadata we already have
- *       (title, artist, duration)</li>
- *   <li>We POST that to {@code /ws/2/recording} — a "recording" in MusicBrainz
- *       terms is a specific audio performance of a track</li>
- *   <li>MusicBrainz returns a list of candidate recordings, each with a
- *       built-in {@code score} (0–100) representing how well it matched</li>
- *   <li>We take the top result, parse it into a {@link TrackMetadata}, and
- *       convert MusicBrainz's 0–100 score into our 0.0–1.0 confidence</li>
- * </ol>
- *
- * <h2>API docs</h2>
- * <p>https://musicbrainz.org/doc/MusicBrainz_API
- */
+// Queries the MusicBrainz open music database for track metadata.
+// No API key needed. Rate limited to 1 request/sec per their guidelines.
+
 public final class MusicBrainzClient {
 
     // ------------------------------------------------------------------

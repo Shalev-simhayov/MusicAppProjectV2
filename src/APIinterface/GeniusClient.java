@@ -7,38 +7,10 @@ import org.json.JSONObject;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Queries the Genius API for song lyrics.
- *
- * <h2>About Genius</h2>
- * <p>Genius is a lyrics and annotation platform. Unlike MusicBrainz or
- * Spotify, Genius is our dedicated <em>lyrics</em> source — the other APIs
- * give us title/artist/album metadata but do not return lyric text.
- *
- * <h2>What Genius gives us</h2>
- * <ul>
- *   <li>Lyrics text (the main reason we're here)</li>
- *   <li>Canonical song title and artist name (useful for cross-checking)</li>
- *   <li>A Genius URL to the full lyrics page</li>
- * </ul>
- *
- * <h2>Authentication</h2>
- * <p>Genius uses a simple Bearer token (no OAuth dance needed):
- * <ol>
- *   <li>Create a free account at https://genius.com/api-clients</li>
- *   <li>Create a new API client — set the app URL to anything (e.g. localhost)</li>
- *   <li>Copy the "Client Access Token" — that's your bearer token</li>
- * </ol>
- *
- * <h2>Important limitation — lyrics scraping</h2>
- * <p>The Genius API <em>search endpoint</em> returns song metadata but NOT
- * the lyrics text itself. To get the actual lyrics we need to scrape the
- * Genius web page for the song. This is a known limitation of their public
- * API. The {@link #fetchLyrics} method handles this scraping step.
- *
- * <h2>API docs</h2>
- * <p>https://docs.genius.com
- */
+// Queries Genius for lyrics. Two steps: search API to find the page, then scrape the HTML.
+// Scraping is unavoidable — Genius doesn't serve lyrics through their API directly.
+// Needs a bearer token from genius.com/api-clients.
+
 public final class GeniusClient {
 
     // ------------------------------------------------------------------

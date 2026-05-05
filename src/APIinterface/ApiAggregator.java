@@ -12,43 +12,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Queries all enabled API sources and returns their results ranked by confidence.
- *
- * <h2>Role in the pipeline</h2>
- * <p>The aggregator sits between the file interface and the scoring system.
- * It doesn't decide which result is "correct" — that's the scorer's job.
- * It just:
- * <ol>
- *   <li>Fires off queries to all enabled APIs (in parallel where possible)</li>
- *   <li>Collects the results</li>
- *   <li>Returns them sorted by confidence, highest first</li>
- * </ol>
- *
- * <p>If the highest-confidence result across all APIs is still below the
- * configured {@code aiThreshold}, the pipeline will hand off to the AI
- * fallback layer instead.
- *
- * <h2>Parallelism</h2>
- * <p>Spotify and Genius requests are fired in parallel using a small thread
- * pool since they are independent of each other. AcoustID runs first
- * (synchronously) because its result is the most valuable and we want to
- * short-circuit early if it returns very high confidence — there's no point
- * querying the other APIs if AcoustID already found a perfect match.
- *
- * <h2>Usage</h2>
- * <pre>{@code
- * ApiAggregator agg = new ApiAggregator.Builder()
- *     .acoustId(acoustIdClient)
- *     .musicBrainz(musicBrainzClient)
- *     .spotify(spotifyClient)
- *     .genius(geniusClient)
- *     .shortCircuitThreshold(0.95)   // skip remaining APIs if one hits 95%+
- *     .build();
- *
- * List<ApiResult> results = agg.query(audioFile, existingMetadata);
- * }</pre>
- */
+// Runs all enabled API clients and returns results ranked by confidence.
+// AcoustID runs first — short-circuits if confidence is high enough.
+// MusicBrainz, Spotify, and Genius run in parallel using Java 21 virtual threads.
+
 public final class ApiAggregator {
 
     // ------------------------------------------------------------------
