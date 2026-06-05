@@ -19,35 +19,21 @@ public final class MusicBrainzClient {
     private static final String BASE_URL    = "https://musicbrainz.org/ws/2";
     private static final String SOURCE_NAME = "MusicBrainz";
 
-    /**
-     * User-Agent header MusicBrainz requires.
-     * Format: "AppName/version (contact-url-or-email)"
-     * Without this they may throttle or block the request.
-     */
+    // MusicBrainz requires this header — without it requests may be throttled or blocked
     private static final String USER_AGENT  = "Lyrify/1.0 (https://github.com/lyrify)";
 
-    /**
-     * How many candidate results to ask MusicBrainz for.
-     * We only use the top one, but asking for a few lets us
-     * potentially fall back if the top result is very low confidence.
-     */
     private static final int RESULT_LIMIT = 5;
 
     // ------------------------------------------------------------------
     // Fields
     // ------------------------------------------------------------------
 
-    /** Shared HTTP client — injected so it can be reused across all API clients. */
     private final ApiClient http;
 
     // ------------------------------------------------------------------
     // Constructor
     // ------------------------------------------------------------------
 
-    /**
-     * @param http the shared {@link ApiClient} instance — do not create a
-     *             new one per API client, share a single instance across all
-     */
     public MusicBrainzClient(ApiClient http) {
         this.http = http;
     }
@@ -56,26 +42,10 @@ public final class MusicBrainzClient {
     // Public API
     // ------------------------------------------------------------------
 
-    /**
-     * Search MusicBrainz for a recording matching the given hints.
-     *
-     * <p>Any combination of parameters may be null — MusicBrainz will still
-     * return results based on whatever is provided, just with lower confidence.
-     * Providing at least {@code title} gives useful results; adding
-     * {@code artist} and {@code durationSeconds} significantly improves accuracy.
-     *
-     * @param title           track title (most important field)
-     * @param artist          performing artist
-     * @param album           release/album name
-     * @param durationSeconds audio duration — used to disambiguate recordings
-     *                        that share a title (e.g. live vs studio versions)
-     * @return {@link ApiResult} — always non-null; check {@link ApiResult#isUsable()}
-     */
     public ApiResult search(String title, String artist, String album, Double durationSeconds) {
-
-        // Need at least a title to search — without it the query is meaningless
-        if (title == null || title.isBlank()) {
-            return ApiResult.error(SOURCE_NAME, "Cannot search without a title");
+        // Need at least a title or artist to produce a meaningful result
+        if ((title == null || title.isBlank()) && (artist == null || artist.isBlank())) {
+            return ApiResult.empty(SOURCE_NAME);
         }
 
         String query    = buildQuery(title, artist, album, durationSeconds);
@@ -100,29 +70,18 @@ public final class MusicBrainzClient {
     // Query builder
     // ------------------------------------------------------------------
 
-    /**
-     * Build a Lucene query string from available metadata fields.
-     *
-     * <p>MusicBrainz uses Lucene syntax for its search endpoint:
-     * <ul>
-     *   <li>{@code recording:"Bohemian Rhapsody"} — search by track title</li>
-     *   <li>{@code artist:"Queen"}                — filter by artist name</li>
-     *   <li>{@code release:"A Night at the Opera"} — filter by album</li>
-     *   <li>{@code dur:[208000 TO 212000]}         — duration range in ms</li>
-     * </ul>
-     * Fields are combined with AND so all provided fields must match.
-     */
+    // Uses Lucene query syntax: recording:"title" AND artist:"name" AND dur:[lower TO upper]
+    // Duration is searched within ±3 seconds to distinguish live vs studio versions
     private static String buildQuery(String title, String artist,
                                       String album, Double durationSeconds) {
         StringBuilder q = new StringBuilder();
 
-        // Title is always present (we checked above)
-        q.append("recording:\"").append(escapeLucene(title)).append("\"");
-
-        if (artist != null && !artist.isBlank()) {
-            q.append(" AND artist:\"").append(escapeLucene(artist)).append("\"");
+        if (title != null && !title.isBlank()) {
+            q.append("recording:\"").append(escapeLucene(title)).append("\"");
         }
-
+        if (artist != null && !artist.isBlank()) {
+            q.append(q.isEmpty() ? "" : " AND ").append("artist:\"").append(escapeLucene(artist)).append("\"");
+        }
         if (album != null && !album.isBlank()) {
             q.append(" AND release:\"").append(escapeLucene(album)).append("\"");
         }
@@ -139,12 +98,6 @@ public final class MusicBrainzClient {
         return q.toString();
     }
 
-    /**
-     * Assemble the full request URL from the query string.
-     *
-     * <p>Example output:
-     * {@code https://musicbrainz.org/ws/2/recording?query=recording%3A%22Bohemian+...&limit=5&fmt=json}
-     */
     private static String buildUrl(String query) {
         Map<String, String> params = new LinkedHashMap<>();
         params.put("query", query);
@@ -157,32 +110,6 @@ public final class MusicBrainzClient {
     // Response parser
     // ------------------------------------------------------------------
 
-    /**
-     * Parse the raw JSON response from MusicBrainz into an {@link ApiResult}.
-     *
-     * <p>MusicBrainz response structure (simplified):
-     * <pre>{@code
-     * {
-     *   "recordings": [
-     *     {
-     *       "score": 98,               ← match confidence 0-100
-     *       "title": "Bohemian Rhapsody",
-     *       "length": 354000,          ← duration in milliseconds
-     *       "artist-credit": [
-     *         { "name": "Queen" }
-     *       ],
-     *       "releases": [
-     *         {
-     *           "title": "A Night at the Opera",
-     *           "date": "1975-11-21",
-     *           "track-count": 12
-     *         }
-     *       ]
-     *     }
-     *   ]
-     * }
-     * }</pre>
-     */
     private static ApiResult parse(String rawJson) {
         JSONObject root;
         try {
@@ -234,7 +161,7 @@ public final class MusicBrainzClient {
             duration = top.getLong("length") / 1000.0;
         }
 
-        TrackMetadata metadata = TrackMetadata.builder("") // filepath filled in by pipeline
+        TrackMetadata metadata = TrackMetadata.builder(null) // filepath filled in by pipeline
                 .title(title)
                 .artist(artist)
                 .album(album)
@@ -245,19 +172,8 @@ public final class MusicBrainzClient {
         return ApiResult.of(SOURCE_NAME, metadata, confidence, rawJson);
     }
 
-    /**
-     * Flatten a MusicBrainz {@code artist-credit} JSON array into a single
-     * artist name string.
-     *
-     * <p>Each element in the array can be either an artist object or a plain
-     * join phrase string (e.g. " feat. "). We concatenate them all together.
-     *
-     * <p>Example input:
-     * <pre>{@code
-     * [{"name": "Jay-Z"}, " feat. ", {"name": "Alicia Keys"}]
-     * }</pre>
-     * Result: {@code "Jay-Z feat. Alicia Keys"}
-     */
+    // artist-credit is a mixed array: artist objects interleaved with join-phrase strings
+    // e.g. [{"name": "Jay-Z"}, " feat. ", {"name": "Alicia Keys"}] → "Jay-Z feat. Alicia Keys"
     private static String parseArtistCredit(JSONArray credits) {
         if (credits == null || credits.isEmpty()) return null;
 
@@ -278,10 +194,8 @@ public final class MusicBrainzClient {
         return result.isEmpty() ? null : result;
     }
 
-    /**
-     * Escape characters that have special meaning in Lucene query syntax.
-     * Without this a title like "What's Going On?" would break the query.
-     */
+    // Characters like + - ! ( ) [ ] ^ " ~ * ? : \ / have special meaning in Lucene —
+    // a title like "What's Going On?" would break the query without escaping
     private static String escapeLucene(String s) {
         // Characters with special meaning in Lucene: + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
         return s.replaceAll("([+\\-!(){}\\[\\]^\"~*?:\\\\/])", "\\\\$1");

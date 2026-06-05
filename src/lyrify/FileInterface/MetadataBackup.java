@@ -2,10 +2,7 @@ package lyrify.FileInterface;
 
 import org.json.JSONObject;
 
-/**
- * Serialisable snapshot of a single track's metadata for backup/restore.
- * Backed by {@link org.json.JSONObject} so no additional ORM is needed.
- */
+// Serialisable snapshot of a single track's metadata for backup/restore.
 public final class MetadataBackup {
 
     private final JSONObject data;
@@ -14,7 +11,7 @@ public final class MetadataBackup {
         this.data = data;
     }
 
-    /** Serialise a {@link TrackMetadata} into a backup entry. */
+    // Serialise a TrackMetadata into a backup JSON entry.
     public static MetadataBackup from(TrackMetadata meta) {
         JSONObject obj = new JSONObject();
         obj.put("filepath",       meta.filepath());
@@ -37,7 +34,7 @@ public final class MetadataBackup {
         if (value != null) obj.put(key, value);
     }
 
-    /** Deserialise back into a {@link TrackMetadata.Builder}. */
+    // Deserialise back into a TrackMetadata.
     public TrackMetadata toMetadata() {
         return TrackMetadata.builder(data.getString("filepath"))
                 .title(data.optString("title",       null))

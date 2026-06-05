@@ -18,20 +18,16 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-// The first screen the user sees.
-// Lets the user pick a music folder, configure scan options,
-// then start the scan. Results are fed into AppState as they arrive.
 public class ScanView {
 
     private final AppState state;
-    private final Stage    ownerStage; // needed to open the directory chooser
+    private final Stage    ownerStage;
+    private Node cachedNode = null;
 
-    // Background thread pool — we run the scan off the JavaFX thread
-    // so the UI stays responsive while files are being processed
     private final ExecutorService executor =
             Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "lyrify-scan");
-                t.setDaemon(true); // don't block JVM shutdown
+                t.setDaemon(true);
                 return t;
             });
 
@@ -40,9 +36,11 @@ public class ScanView {
         this.ownerStage = ownerStage;
     }
 
-    // Builds and returns the full scan screen node.
-    // Called every time the user navigates to this screen.
+    // Build the scan screen once and cache it so navigating away and back
+    // doesn't reset the directory field.
     public Node build() {
+        if (cachedNode != null) return cachedNode;
+
         VBox page = new VBox(UIStyles.PAD_LG);
         page.setPadding(new Insets(UIStyles.PAD_LG));
         page.setStyle(UIStyles.CSS_ROOT);
@@ -55,10 +53,11 @@ public class ScanView {
                 buildScanButton()
         );
 
-        return page;
+        cachedNode = page;
+        return cachedNode;
     }
 
-    // -- Section builders -----------------------------------------------------
+    // ── Section builders ──────────────────────────────────────────────────────
 
     private Node buildHeading() {
         Label title = new Label("Scan Music Library");
@@ -68,8 +67,7 @@ public class ScanView {
         sub.setStyle(UIStyles.CSS_MUTED);
         sub.setWrapText(true);
 
-        VBox box = new VBox(4, title, sub);
-        return box;
+        return new VBox(4, title, sub);
     }
 
     private Node buildDirectoryPicker() {
@@ -79,27 +77,25 @@ public class ScanView {
         Label label = new Label("Music folder");
         label.setStyle("-fx-font-weight: bold; -fx-font-size: 13px;");
 
-        // Text field shows the selected path; user can also type one directly
         TextField pathField = new TextField();
         pathField.setStyle(UIStyles.CSS_FIELD);
-        pathField.setPromptText("e.g. /Users/me/Music");
-        pathField.setPrefWidth(999); // fill available width
+        pathField.setPromptText("e.g. C:\\Users\\Me\\Music");
+        pathField.setPrefWidth(999);
+
         // Keep AppState in sync when the user types a path manually
         pathField.textProperty().addListener(
                 (obs, o, n) -> state.setSelectedDirectory(n)
         );
-        // Also update the field when AppState changes (e.g. after picking a folder)
+        // Update the field when AppState changes (e.g. after Browse)
         state.selectedDirectoryProperty().addListener(
                 (obs, o, n) -> { if (!pathField.getText().equals(n)) pathField.setText(n); }
         );
 
-        // Browse button opens the OS directory chooser
         Button browseBtn = new Button("Browse…");
         browseBtn.setStyle(UIStyles.CSS_BTN_SECONDARY);
         browseBtn.setOnAction(e -> {
             DirectoryChooser chooser = new DirectoryChooser();
             chooser.setTitle("Select Music Folder");
-            // Pre-open the last used directory if there is one
             if (!state.getSelectedDirectory().isBlank()) {
                 File current = new File(state.getSelectedDirectory());
                 if (current.isDirectory()) chooser.setInitialDirectory(current);
@@ -123,7 +119,6 @@ public class ScanView {
         Label label = new Label("Scan options");
         label.setStyle("-fx-font-weight: bold; -fx-font-size: 13px;");
 
-        // Checkboxes bind directly to AppState boolean properties
         CheckBox recursive = new CheckBox("Include subdirectories");
         recursive.selectedProperty().bindBidirectional(state.recursiveProperty());
 
@@ -137,7 +132,6 @@ public class ScanView {
         return card;
     }
 
-    // Shows whether the local Python AI server is reachable
     private Node buildAiStatus() {
         HBox row = new HBox(UIStyles.PAD_SM);
         row.setAlignment(Pos.CENTER_LEFT);
@@ -149,19 +143,9 @@ public class ScanView {
         Label statusLabel = new Label("Checking…");
         statusLabel.setStyle("-fx-text-fill: " + UIStyles.TEXT_MUTED + ";");
 
-        // Run the health check on a background thread so the UI doesn't freeze
         executor.submit(() -> {
             boolean up = new AiClient().isServerUp();
-            // Always update UI on the JavaFX thread (Platform.runLater)
-            Platform.runLater(() -> {
-                if (up) {
-                    statusLabel.setText("● Online — AI fallback available");
-                    statusLabel.setStyle("-fx-text-fill: " + UIStyles.SUCCESS + ";");
-                } else {
-                    statusLabel.setText("● Offline — run ai/server.py to enable AI fallback");
-                    statusLabel.setStyle("-fx-text-fill: " + UIStyles.WARNING + ";");
-                }
-            });
+            Platform.runLater(() -> updateAiStatus(statusLabel, up));
         });
 
         Button recheck = new Button("Re-check");
@@ -171,15 +155,7 @@ public class ScanView {
             statusLabel.setStyle("-fx-text-fill: " + UIStyles.TEXT_MUTED + ";");
             executor.submit(() -> {
                 boolean up = new AiClient().isServerUp();
-                Platform.runLater(() -> {
-                    if (up) {
-                        statusLabel.setText("● Online — AI fallback available");
-                        statusLabel.setStyle("-fx-text-fill: " + UIStyles.SUCCESS + ";");
-                    } else {
-                        statusLabel.setText("● Offline — run ai/server.py to enable AI fallback");
-                        statusLabel.setStyle("-fx-text-fill: " + UIStyles.WARNING + ";");
-                    }
-                });
+                Platform.runLater(() -> updateAiStatus(statusLabel, up));
             });
         });
 
@@ -187,14 +163,21 @@ public class ScanView {
         return row;
     }
 
+    private void updateAiStatus(Label statusLabel, boolean up) {
+        if (up) {
+            statusLabel.setText("● Online — AI fallback available");
+            statusLabel.setStyle("-fx-text-fill: " + UIStyles.SUCCESS + ";");
+        } else {
+            statusLabel.setText("● Offline — run ai/server.py to enable AI fallback");
+            statusLabel.setStyle("-fx-text-fill: " + UIStyles.WARNING + ";");
+        }
+    }
+
     private Node buildScanButton() {
         Button scanBtn = new Button("Start Scan");
         scanBtn.setStyle(UIStyles.CSS_BTN_PRIMARY);
         scanBtn.setPrefWidth(160);
-
-        // Disable the button while a scan is already running
         scanBtn.disableProperty().bind(state.scanningProperty());
-
         scanBtn.setOnAction(e -> startScan());
 
         HBox row = new HBox(scanBtn);
@@ -202,10 +185,8 @@ public class ScanView {
         return row;
     }
 
-    // -- Scan logic -----------------------------------------------------------
+    // ── Scan logic ────────────────────────────────────────────────────────────
 
-    // Builds the LyrifyManager from current AppState settings and runs the scan
-    // on a background thread, updating AppState as results arrive.
     private void startScan() {
         String dir = state.getSelectedDirectory();
         if (dir.isBlank()) {
@@ -213,7 +194,16 @@ public class ScanView {
             return;
         }
 
-        // Clear previous results before starting
+        // Read all AppState values on the FX thread BEFORE going to the background thread
+        String  acoustIdKey  = state.acoustIdKeyProperty().get();
+        String  geniusToken  = state.geniusTokenProperty().get();
+        boolean isRecursive  = state.isRecursive();
+        boolean useCache    = state.isUseCache();
+        double  acceptT      = state.getAcceptThreshold();
+        double  reviewT      = state.getReviewThreshold();
+        double  aiT          = state.getAiThreshold();
+        boolean doBackup = state.isBackupBeforeScan();
+
         state.getResults().clear();
         state.setScanning(true);
         state.setScanProgress(0.0);
@@ -221,17 +211,15 @@ public class ScanView {
 
         executor.submit(() -> {
             try {
-                LyrifyManager manager = buildManager();
-
-                // scanDirectory returns all results once complete — for large
-                // libraries you'd want streaming; this is fine for most use cases
-                Platform.runLater(() -> state.setStatusMessage("Scanning…"));
-                List<PipelineResult> results = manager.processDirectory(
-                        dir, state.isRecursive()
+                LyrifyManager manager = buildManager(
+                        acoustIdKey, geniusToken,
+                        acceptT, reviewT, aiT
                 );
 
-                // Add results to ObservableList on the FX thread one at a time
-                // so the table view animates as they arrive
+                Platform.runLater(() -> state.setStatusMessage("Scanning…"));
+
+                List<PipelineResult> results = manager.processDirectory(dir, isRecursive, useCache, doBackup);
+
                 for (int i = 0; i < results.size(); i++) {
                     final int idx = i;
                     final PipelineResult r = results.get(i);
@@ -242,7 +230,6 @@ public class ScanView {
                                 "Processed %d / %d tracks".formatted(idx + 1, results.size())
                         );
                     });
-                    // Small pause so the UI renders each row rather than batch-jumping
                     Thread.sleep(20);
                 }
 
@@ -266,56 +253,40 @@ public class ScanView {
         });
     }
 
-    // Builds the LyrifyManager using current AppState settings.
-    // Every API client is optional — we only add ones whose keys are filled in.
-    private LyrifyManager buildManager() {
+    private LyrifyManager buildManager(String acoustIdKey, String geniusToken,
+                                       double acceptThreshold, double reviewThreshold,
+                                       double aiThreshold) {
         ApiClient http = new ApiClient();
 
-        // AcoustID — only needs an API key
         AcoustIdClient acoustId = null;
-        if (!state.acoustIdKeyProperty().get().isBlank()) {
-            acoustId = new AcoustIdClient(http, state.acoustIdKeyProperty().get());
+        if (!acoustIdKey.isBlank()) {
+            acoustId = new AcoustIdClient(http, acoustIdKey);
         }
 
-        // MusicBrainz — no key required, always on
         MusicBrainzClient musicBrainz = new MusicBrainzClient(http);
 
-        // Spotify — needs both client ID and secret
-        SpotifyClient spotify = null;
-        if (!state.spotifyClientIdProperty().get().isBlank()
-                && !state.spotifySecretProperty().get().isBlank()) {
-            spotify = new SpotifyClient(http,
-                    state.spotifyClientIdProperty().get(),
-                    state.spotifySecretProperty().get());
-        }
-
-        // Genius — needs a bearer token
         GeniusClient genius = null;
-        if (!state.geniusTokenProperty().get().isBlank()) {
-            genius = new GeniusClient(http, state.geniusTokenProperty().get());
+        if (!geniusToken.isBlank()) {
+            genius = new GeniusClient(http, geniusToken);
         }
 
         ApiAggregator.Builder aggBuilder = new ApiAggregator.Builder()
                 .musicBrainz(musicBrainz);
-        if (acoustId  != null) aggBuilder.acoustId(acoustId);
-        if (spotify   != null) aggBuilder.spotify(spotify);
-        if (genius    != null) aggBuilder.genius(genius);
+        if (acoustId != null) aggBuilder.acoustId(acoustId);
+        if (genius   != null) aggBuilder.genius(genius);
 
         ApiAggregator aggregator = aggBuilder.build();
-
-        // AI client — always created; isServerUp() is checked inside LyrifyManager
         AiClient aiClient = new AiClient();
 
         return new LyrifyManager.Builder()
                 .apiAggregator(aggregator)
                 .aiClient(aiClient)
-                .acceptThreshold(state.getAcceptThreshold())
-                .reviewThreshold(state.getReviewThreshold())
-                .aiThreshold(state.getAiThreshold())
+                .acceptThreshold(acceptThreshold)
+                .reviewThreshold(reviewThreshold)
+                .aiThreshold(aiThreshold)
                 .build();
     }
 
-    // Shows a simple error dialog on the FX thread
     private void showError(String message) {
         Platform.runLater(() -> {
             Alert alert = new Alert(Alert.AlertType.ERROR);

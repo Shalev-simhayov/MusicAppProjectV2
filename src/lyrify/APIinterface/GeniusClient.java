@@ -20,7 +20,6 @@ public final class GeniusClient {
     private static final String API_BASE    = "https://api.genius.com";
     private static final String SOURCE_NAME = "Genius";
 
-    /** How many search results to request. */
     private static final int RESULT_LIMIT = 5;
 
     // ------------------------------------------------------------------
@@ -34,10 +33,6 @@ public final class GeniusClient {
     // Constructor
     // ------------------------------------------------------------------
 
-    /**
-     * @param http        shared {@link ApiClient} instance
-     * @param bearerToken your Genius Client Access Token
-     */
     public GeniusClient(ApiClient http, String bearerToken) {
         if (bearerToken == null || bearerToken.isBlank())
             throw new IllegalArgumentException("Genius bearer token must not be blank");
@@ -49,23 +44,7 @@ public final class GeniusClient {
     // Public API
     // ------------------------------------------------------------------
 
-    /**
-     * Search Genius for a song and return its metadata + lyrics.
-     *
-     * <p>This performs two HTTP requests:
-     * <ol>
-     *   <li>Search the Genius API to find the song's page URL</li>
-     *   <li>Fetch and scrape that page to extract the lyrics text</li>
-     * </ol>
-     *
-     * @param title  song title
-     * @param artist artist name (helps narrow the search)
-     * @return {@link ApiResult} — always non-null
-     */
     public ApiResult search(String title, String artist) {
-        if (title == null || title.isBlank()) {
-            return ApiResult.error(SOURCE_NAME, "Cannot search without a title");
-        }
 
         // Step 1: find the song via the search endpoint
         SongHit hit = findSong(title, artist);
@@ -78,7 +57,7 @@ public final class GeniusClient {
 
         // Build metadata — Genius gives us title and artist from the search,
         // and lyrics from the page scrape
-        TrackMetadata metadata = TrackMetadata.builder("")
+        TrackMetadata metadata = TrackMetadata.builder(null)
                 .title(hit.title())
                 .artist(hit.artist())
                 .lyrics(lyrics)
@@ -95,45 +74,13 @@ public final class GeniusClient {
     // Search — step 1
     // ------------------------------------------------------------------
 
-    /**
-     * Internal container for a matched Genius song entry.
-     *
-     * @param title   song title from Genius
-     * @param artist  artist name from Genius
-     * @param url     URL to the Genius lyrics page
-     * @param rawJson raw JSON of this hit for debugging
-     */
     private record SongHit(String title, String artist, String url, String rawJson) {}
 
-    /**
-     * Search the Genius API for a song and return the best hit, or null
-     * if nothing was found.
-     *
-     * <p>Genius search response structure:
-     * <pre>{@code
-     * {
-     *   "response": {
-     *     "hits": [
-     *       {
-     *         "type": "song",
-     *         "result": {
-     *           "title": "Bohemian Rhapsody",
-     *           "url": "https://genius.com/Queen-bohemian-rhapsody-lyrics",
-     *           "primary_artist": {
-     *             "name": "Queen"
-     *           }
-     *         }
-     *       }
-     *     ]
-     *   }
-     * }
-     * }</pre>
-     */
     private SongHit findSong(String title, String artist) {
-        // Combine title and artist into a single search string
-        String searchTerm = (artist != null && !artist.isBlank())
-                ? artist + " " + title
-                : title;
+        String searchTerm = "";
+        if (artist != null && !artist.isBlank()) searchTerm += artist + " ";
+        if (title  != null && !title.isBlank())  searchTerm += title;
+        if (searchTerm.isBlank()) return null;
 
         Map<String, String> params = new LinkedHashMap<>();
         params.put("q",       searchTerm);
@@ -183,19 +130,6 @@ public final class GeniusClient {
     // Lyrics scraping — step 2
     // ------------------------------------------------------------------
 
-    /**
-     * Fetch and parse the lyrics from a Genius song page.
-     *
-     * <p>The Genius API doesn't serve lyrics directly, so we fetch the HTML
-     * page and extract lyrics from it. Genius wraps lyrics in
-     * {@code <div data-lyrics-container="true">} elements.
-     *
-     * <p>We strip HTML tags and normalise line breaks to produce clean plain
-     * text suitable for writing into an ID3 USLT frame or an LRC file.
-     *
-     * @param pageUrl the Genius song page URL (e.g. https://genius.com/Queen-...)
-     * @return lyrics as plain text, or null if scraping failed
-     */
     private String fetchLyrics(String pageUrl) {
         String html;
         try {
@@ -210,16 +144,8 @@ public final class GeniusClient {
         return parseLyricsFromHtml(html);
     }
 
-    /**
-     * Extract the lyrics text from Genius page HTML.
-     *
-     * <p>Strategy: find all {@code data-lyrics-container="true"} div blocks,
-     * extract their inner text, strip HTML tags, and join with newlines.
-     *
-     * <p>Note: this is inherently fragile — if Genius changes their page
-     * structure, this parser will need updating. This is the unavoidable
-     * trade-off of scraping rather than using a proper API endpoint.
-     */
+    // Genius wraps lyrics in <div data-lyrics-container="true"> elements.
+    // This is inherently fragile — if Genius changes their page structure, this will break.
     private static String parseLyricsFromHtml(String html) {
         if (html == null || html.isBlank()) return null;
 
@@ -275,16 +201,32 @@ public final class GeniusClient {
         }
 
         String result = lyrics.toString().strip();
+
+// Remove Genius contributor breakdown that sometimes appears at the top.
+// It looks like "N Contributors\nSong Title Lyrics\n" before the actual lyrics.
+// We strip any leading lines that match this pattern.
+        String[] resultLines = result.split("\n");
+        int startIdx = 0;
+        for (int i = 0; i < Math.min(resultLines.length, 4); i++) {
+            String l = resultLines[i].strip();
+            if (l.matches("\\d+\\s+Contributor.*") || l.endsWith("Lyrics") || l.endsWith("lyrics")) {
+                startIdx = i + 1;
+            }
+        }
+        if (startIdx > 0) {
+            result = String.join("\n", java.util.Arrays.copyOfRange(resultLines, startIdx, resultLines.length)).strip();
+        }
         return result.isEmpty() ? null : result;
     }
 
-    /** Decode the most common HTML entities found in Genius lyrics. */
     private static String decodeHtmlEntities(String s) {
         return s.replace("&amp;",  "&")
                 .replace("&lt;",   "<")
                 .replace("&gt;",   ">")
                 .replace("&quot;", "\"")
                 .replace("&#39;",  "'")
+                .replace("&#x27;", "'")
+                .replace("&#x2F;", "/")
                 .replace("&nbsp;", " ");
     }
 
@@ -292,31 +234,21 @@ public final class GeniusClient {
     // Confidence computation
     // ------------------------------------------------------------------
 
-    /**
-     * Estimate match confidence by comparing the query terms against
-     * what Genius actually returned.
-     *
-     * <p>Uses a simple normalised character-overlap metric rather than a
-     * full string similarity algorithm (that lives in the scoring layer).
-     * Here we just need a rough estimate.
-     */
+    // Title is weighted more than artist (0.65 vs 0.35) for lyrics retrieval
     private static double computeConfidence(String queryTitle, String queryArtist,
-                                             String hitTitle,   String hitArtist) {
+                                            String hitTitle,   String hitArtist) {
         double titleSim  = similarity(queryTitle,  hitTitle);
         double artistSim = queryArtist != null && hitArtist != null
                 ? similarity(queryArtist, hitArtist)
-                : 0.5; // neutral if we couldn't check
+                : 0.5;
 
-        // Weight: title matters more than artist for lyrics retrieval
         double confidence = (titleSim * 0.65) + (artistSim * 0.35);
-        return Math.max(0.0, Math.min(1.0, confidence));
+        // If we successfully got lyrics, minimum confidence is 0.5
+        // — lyrics are valuable regardless of title match quality
+        return Math.max(0.5, Math.min(1.0, confidence));
     }
 
-    /**
-     * Simple character-bigram similarity between two strings.
-     * Returns 1.0 for identical strings, 0.0 for completely different ones.
-     * Case-insensitive.
-     */
+    // Character-bigram similarity — 1.0 for identical strings, 0.0 for completely different
     private static double similarity(String a, String b) {
         if (a == null || b == null) return 0.0;
         a = a.toLowerCase();

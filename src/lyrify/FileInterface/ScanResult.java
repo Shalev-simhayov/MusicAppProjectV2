@@ -1,15 +1,7 @@
 package lyrify.FileInterface;
 
-/**
- * Result of scanning a single audio file.
- * Either holds a populated {@link TrackMetadata} or an error message.
- * 
- * acts like casing that returns either data or error upon use of .isSuccess
- *
- * Always check {@link #isSuccess()} before accessing {@link #metadata} or {@link #error}.
- * Exactly one of the two will be non-null for any given instance.
- */
-//immutable data object of the result
+// Result of scanning a single audio file — holds either a TrackMetadata or an error.
+// Always check isSuccess() before accessing metadata() or error().
 public record ScanResult(
         String        path,
         TrackMetadata metadata,

@@ -5,12 +5,9 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 
-/**
- * Self-contained test runner for FileInterface.
- * No JUnit needed — run with:
- *   javac -cp .:json-*.jar src/lyrify/*.java -d out
- *   java  -cp out:json-*.jar lyrify.FileInterfaceTest
- */
+// Self-contained test runner for FileInterface. No JUnit needed — run with:
+//   javac -cp .:json-*.jar src/lyrify/*.java -d out
+//   java  -cp out:json-*.jar lyrify.FileInterfaceTest
 public final class FileInterfaceTest {
 
     private static int passed = 0;

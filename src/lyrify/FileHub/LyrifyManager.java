@@ -5,11 +5,13 @@ import lyrify.APIinterface.ApiResult;
 import lyrify.FileInterface.FileInterface;
 import lyrify.FileInterface.LyrifyException;
 import lyrify.FileInterface.TrackMetadata;
+import lyrify.FileInterface.ScanResult;
 
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.Set;
 
 // Central hub for the Lyrify pipeline.
 //
@@ -22,7 +24,7 @@ import java.util.Scanner;
 //   4. Score results       (scorer — coming soon, stub for now)
 //   5a. If score >= accept threshold  → write metadata, done
 //   5b. If score >= review threshold  → ask user to confirm, then write
-//   5c. If score < ai threshold       → run AI pipeline (Demucs + Whisper)
+//   5c. If score < AI threshold       → run AI pipeline (Demucs + Whisper)
 //   5d. Score AI result               → same accept/review/fail logic
 //   5e. If still too low              → return a no-match warning, don't write
 //
@@ -71,6 +73,8 @@ public final class LyrifyManager {
 
         log("=== Processing: " + filePath + " ===");
 
+
+
         // -- Step 1: validate and scan the file --
         Path path;
         TrackMetadata existing;
@@ -81,6 +85,12 @@ public final class LyrifyManager {
         } catch (LyrifyException e) {
             log("ERROR reading file: " + e.getMessage());
             return PipelineResult.noMatch(filePath, 0.0);
+        }
+
+        // Skip if already processed by Lyrify and cache is enabled
+        if (FileInterface.isAlreadyProcessed(path)) {
+            log("Already processed by Lyrify — skipping: " + path.getFileName());
+            return PipelineResult.cached(path.toString(), existing);
         }
 
         // -- Step 2: query all APIs --
@@ -94,51 +104,131 @@ public final class LyrifyManager {
 
         // Score is good enough — handle directly
         if (apiScore >= aiThreshold) {
-            return handleResult(path, bestApi.metadata(), apiScore,
+            // Fold all usable API results into one merged metadata object.
+            // This collects: title/artist (AcoustID), year/trackNum (MusicBrainz),
+            // lyrics (Genius) — whichever source has each field.
+            TrackMetadata merged = bestApi.metadata();
+            for (ApiResult r : apiResults) {
+                if (r != bestApi && r.isUsable() && r.metadata() != null) {
+                    merged = mergeAll(merged, r.metadata());
+                    log("Merged lyrics: " + (merged.lyrics() != null ? merged.lyrics().substring(0, Math.min(50, merged.lyrics().length())) : "null"));
+                }
+            }
+            return handleResult(path, merged, apiScore,
                     PipelineResult.Stage.API, existing);
         }
 
         // Score is too low — try the AI fallback
-        log("API score %.2f below AI threshold %.2f — running AI fallback..."
+        // Score too low — try generating lyrics via AI
+        log("API score %.2f below AI threshold %.2f — generating lyrics via AI..."
                 .formatted(apiScore, aiThreshold));
 
-        // -- Step 4: AI fallback --
-        if (aiClient == null) {
-            log("AI client not configured — skipping AI fallback.");
-            return PipelineResult.noMatch(filePath, apiScore);
+
+        
+        if (aiClient != null && aiClient.isServerUp()) {
+            String langHint = detectLanguage(
+                    existing.title(),
+                    bestApi.isUsable() && bestApi.metadata() != null ? bestApi.metadata().title() : null
+            );
+
+            AiClient.PipelineAiResult ai = aiClient.runPipeline(path.toString(), langHint);
+            log("AI result — hasText: " + ai.hasText() +
+                    ", segments: " + ai.segments().size() +
+                    ", duration: " + ai.durationSeconds());
+            if (ai.hasText()) {
+                log("First 100 chars: " + ai.text().substring(0, Math.min(100, ai.text().length())));
+            }
+            
+            if (ai.hasText()) {
+                log("Whisper transcribed %d chars in language '%s', %d segments"
+                        .formatted(ai.text().length(), ai.language(), ai.segments().size()));
+
+                try {
+                    List<lyrify.FileInterface.LrcLine> lrcLines = new java.util.ArrayList<>();
+
+                    if (!ai.segments().isEmpty()) {
+                        // Use real Whisper timestamps — accurate to the second
+                        for (AiClient.Segment seg : ai.segments()) {
+                            int ms = (int)(seg.start() * 1000);
+                            log("Segment: start=" + seg.start() + " ms=" + ms + " text=" + seg.text().substring(0, Math.min(20, seg.text().length())));
+                            lrcLines.add(new lyrify.FileInterface.LrcLine(ms, seg.text()));
+                        }
+                    } else {
+                        // Fallback: evenly space lines if no segments available
+                        String[] lines = ai.text().split("\r\n");
+                        double totalDur = ai.durationSeconds() > 0 ? ai.durationSeconds() : 180.0;
+                        double step = totalDur / Math.max(lines.length, 1);
+                        for (int i = 0; i < lines.length; i++) {
+                            if (!lines[i].isBlank()) {
+                                lrcLines.add(new lyrify.FileInterface.LrcLine(
+                                        (int)(i * step * 1000), lines[i].strip()));
+                            }
+                        }
+                    }
+
+                    // Build metadata for LRC header — mark as AI generated
+                    TrackMetadata lrcMeta = TrackMetadata.builder(path.toString())
+                            .title(existing.title())
+                            .artist(existing.artist())
+                            .album(existing.album())
+                            .lyrics("[AI-Generated by Lyrify — Language: " +
+                                    (ai.language() != null ? ai.language() : "unknown") + "]\n"
+                                    + ai.text())
+                            .build();
+
+                    log("Writing LRC with " + lrcLines.size() + " lines, first timestamp: " +
+                            (lrcLines.isEmpty() ? "none" : lrcLines.getFirst().timestampMs()));
+                    FileInterface.createLrcFile(path, lrcLines, lrcMeta, null);
+                    log("AI-generated LRC file saved with " + lrcLines.size() + " timestamped lines.");
+                } catch (Exception e) {
+                    log("WARNING: LRC generation failed — " + e.getMessage());
+                }
+
+                // If we have a usable API result, attach the AI lyrics to it and return
+                if (bestApi.isUsable()) {
+                    TrackMetadata withLyrics = TrackMetadata.builder(path.toString())
+                            .title(bestApi.metadata() != null ? bestApi.metadata().title() : null)
+                            .artist(bestApi.metadata() != null ? bestApi.metadata().artist(): null)
+                            .album(bestApi.metadata() != null ? bestApi.metadata().album() : null)
+                            .albumArtist(bestApi.metadata() != null ? bestApi.metadata().albumArtist() : null)
+                            .trackNumber(bestApi.metadata() != null ? bestApi.metadata().trackNumber() : null)
+                            .year(bestApi.metadata() != null ? bestApi.metadata().year() : null)
+                            .genre(bestApi.metadata() != null ? bestApi.metadata().genre() : null)
+                            .lyrics(ai.text())
+                            .durationSeconds(bestApi.metadata() != null ? bestApi.metadata().durationSeconds() : null)
+                            .build();
+                    return handleResult(path, withLyrics, apiScore,
+                            PipelineResult.Stage.AI, existing);
+                }
+            } else {
+                log("Whisper returned empty transcription.");
+            }
+        } else {
+            log("WARNING: AI server is not running. Start server.py to enable lyric generation.");
         }
 
-        if (!aiClient.isServerUp()) {
-            log("WARNING: AI server is not running. Start server.py and retry.");
-            return PipelineResult.noMatch(filePath, apiScore);
+// Fall back to best API result even without lyrics
+        if (bestApi.isUsable()) {
+            log("Using API result without lyrics: %s (score %.2f)"
+                    .formatted(bestApi.source(), apiScore));
+            return handleResult(path, bestApi.metadata(), apiScore,
+                    PipelineResult.Stage.API, existing);
         }
 
-        TrackMetadata aiMeta = runAiFallback(path, existing);
-        if (aiMeta == null) {
-            log("AI fallback produced no result.");
-            return PipelineResult.noMatch(filePath, apiScore);
+// Last resort: try existing tags
+        if (existing.title() != null || existing.artist() != null) {
+            log("Trying existing tags as search hint: " + summarise(existing));
+            List<ApiResult> tagResults = apiAggregator.query(existing);
+            ApiResult bestTag = ApiAggregator.best(tagResults);
+            if (bestTag.isUsable()) {
+                log("Found match using existing tags: %s (score %.2f)"
+                        .formatted(bestTag.source(), bestTag.confidence()));
+                return handleResult(path, bestTag.metadata(), bestTag.confidence(),
+                        PipelineResult.Stage.API, existing);
+            }
         }
 
-        // -- Step 5: re-query APIs with AI-transcribed lyrics --
-        // Whisper gave us the lyric text — use it to search again with
-        // better query terms than we had from the original bad tags
-        log("Re-querying APIs with AI transcription...");
-        List<ApiResult> aiApiResults = apiAggregator.query(aiMeta);
-        ApiResult bestAiApi = ApiAggregator.best(aiApiResults);
-
-        // Merge: prefer re-queried API metadata but keep AI lyrics if API has none
-        TrackMetadata merged = merge(bestAiApi.isUsable() ? bestAiApi.metadata() : null, aiMeta);
-        double aiScore = bestAiApi.isUsable() ? bestAiApi.confidence() : 0.0;
-
-        log("AI pipeline result score: %.2f".formatted(aiScore));
-
-        // -- Step 6: decide what to do with the AI score --
-        if (!bestAiApi.isUsable() || aiScore < reviewThreshold) {
-            log("AI score %.2f still too low — no accurate match found.".formatted(aiScore));
-            return PipelineResult.noMatch(filePath, aiScore);
-        }
-
-        return handleResult(path, merged, aiScore, PipelineResult.Stage.AI, existing);
+        return PipelineResult.noMatch(filePath, apiScore);
     }
 
     // ------------------------------------------------------------------
@@ -147,7 +237,7 @@ public final class LyrifyManager {
 
     // Process every file in a directory and return one PipelineResult per track.
     // Backs up existing metadata before doing anything.
-    public List<PipelineResult> processDirectory(String dirPath, boolean recursive) {
+    public List<PipelineResult> processDirectory(String dirPath, boolean recursive, boolean useCache, boolean doBackup) {
         log("=== Batch scan: " + dirPath + " ===");
 
         List<Path> files;
@@ -165,20 +255,47 @@ public final class LyrifyManager {
             return List.of();
         }
 
-        log("Found %d audio files. Backing up existing metadata...".formatted(files.size()));
+        log("Found %d audio files.".formatted(files.size()));
 
-        // Backup before touching anything
-        try {
-            Path backup = FileInterface.backupMetadata(files, null);
-            log("Backup written: " + backup);
-        } catch (LyrifyException e) {
-            log("WARNING: backup failed — " + e.getMessage());
+        if (doBackup) {
+            try {
+                Path backup = FileInterface.backupMetadata(files, null);
+                log("Backup written: " + backup);
+            } catch (LyrifyException e) {
+                log("WARNING: backup failed — " + e.getMessage());
+            }
         }
 
-        // Process each file and collect results
-        return files.stream()
-                .map(f -> process(f.toString()))
+        // Process each file — cached files get a "previously scanned" result,
+        // non-cached files go through the full pipeline
+        List<ScanResult> scanResults;
+        try {
+            if (useCache) {
+                scanResults = FileInterface.scanWithCache(files, Path.of(dirPath));
+            } else {
+                scanResults = files.stream()
+                        .map(f -> ScanResult.of(f.toString(), null, false))
+                        .toList();
+            }
+        } catch (LyrifyException e) {
+            log("WARNING: cache unavailable — " + e.getMessage());
+            scanResults = files.stream()
+                    .map(f -> ScanResult.of(f.toString(), null, false))
+                    .toList();
+        }
+
+        List<PipelineResult> results = scanResults.stream()
+                .map(sr -> {
+                    if (sr.fromCache()) {
+                        log("Cache hit — skipping pipeline for: " + sr.path());
+                        return PipelineResult.cached(sr.path(), sr.metadata());
+                    }
+                    return process(sr.path());
+                })
                 .toList();
+
+        apiAggregator.shutdown();
+        return results;
     }
 
     // ------------------------------------------------------------------
@@ -192,10 +309,17 @@ public final class LyrifyManager {
                                         TrackMetadata existing) {
         // Auto-accept — score is high enough, write without asking
         if (score >= acceptThreshold) {
-            boolean written = writeMetadata(path, meta);
+            // Rebuild metadata with the correct filepath before writing
+            TrackMetadata finalMeta = TrackMetadata.builder(path.toString())
+                    .title(meta.title()).artist(meta.artist()).album(meta.album())
+                    .albumArtist(meta.albumArtist()).trackNumber(meta.trackNumber())
+                    .year(meta.year()).genre(meta.genre()).lyrics(meta.lyrics())
+                    .durationSeconds(meta.durationSeconds()).mimeType(meta.mimeType())
+                    .build();
+            boolean written = writeMetadata(path, finalMeta);
             return stage == PipelineResult.Stage.API
-                    ? PipelineResult.fromApi(path.toString(), meta, score, false, written)
-                    : PipelineResult.fromAi(path.toString(), meta, score, false, written);
+                    ? PipelineResult.fromApi(path.toString(), finalMeta, score, false, written)
+                    : PipelineResult.fromAi(path.toString(), finalMeta, score, false, written);
         }
 
         // Review zone — score is acceptable but not confident enough to auto-write
@@ -203,79 +327,92 @@ public final class LyrifyManager {
             log("Score %.2f is in review zone [%.2f, %.2f) — asking for confirmation..."
                     .formatted(score, reviewThreshold, acceptThreshold));
             boolean confirmed = askUserConfirmation(path, existing, meta, score);
-            boolean written   = confirmed && writeMetadata(path, meta);
+            TrackMetadata finalMeta = TrackMetadata.builder(path.toString())
+                    .title(meta.title()).artist(meta.artist()).album(meta.album())
+                    .albumArtist(meta.albumArtist()).trackNumber(meta.trackNumber())
+                    .year(meta.year()).genre(meta.genre()).lyrics(meta.lyrics())
+                    .durationSeconds(meta.durationSeconds()).mimeType(meta.mimeType())
+                    .build();
+            boolean written = confirmed && writeMetadata(path, finalMeta);
             return stage == PipelineResult.Stage.API
-                    ? PipelineResult.fromApi(path.toString(), meta, score, !confirmed, written)
-                    : PipelineResult.fromAi(path.toString(), meta, score, !confirmed, written);
+                    ? PipelineResult.fromApi(path.toString(), finalMeta, score, !confirmed, written)
+                    : PipelineResult.fromAi(path.toString(), finalMeta, score, !confirmed, written);
         }
 
-        // Below review threshold — no write
+        // Below review threshold — no write, but if AI generated lyrics, keep them in result
+        if (stage == PipelineResult.Stage.AI && meta != null && meta.lyrics() != null) {
+            TrackMetadata finalMeta = TrackMetadata.builder(path.toString())
+                    .title(meta.title()).artist(meta.artist()).album(meta.album())
+                    .albumArtist(meta.albumArtist()).trackNumber(meta.trackNumber())
+                    .year(meta.year()).genre(meta.genre()).lyrics(meta.lyrics())
+                    .durationSeconds(meta.durationSeconds()).mimeType(meta.mimeType())
+                    .build();
+            return PipelineResult.fromAi(path.toString(), finalMeta, score, true, false);
+        }
+        // Below review threshold — but preserve lyrics if we found any
+        if (meta != null && meta.lyrics() != null) {
+            TrackMetadata finalMeta = TrackMetadata.builder(path.toString())
+                    .title(meta.title()).artist(meta.artist()).album(meta.album())
+                    .albumArtist(meta.albumArtist()).trackNumber(meta.trackNumber())
+                    .year(meta.year()).genre(meta.genre()).lyrics(meta.lyrics())
+                    .durationSeconds(meta.durationSeconds()).mimeType(meta.mimeType())
+                    .build();
+            return PipelineResult.fromApi(path.toString(), finalMeta, score, true, false);
+        }
         return PipelineResult.noMatch(path.toString(), score);
     }
 
     // ------------------------------------------------------------------
-    // Internal: AI fallback — Demucs + Whisper
-    // ------------------------------------------------------------------
 
-    // Runs the AI pipeline and returns a TrackMetadata built from the
-    // transcribed lyrics + detected language. Returns null on failure.
-    private TrackMetadata runAiFallback(Path audioPath, TrackMetadata existing) {
-        try {
-            AiClient.PipelineAiResult ai = aiClient.runPipeline(
-                    audioPath.toString(),
-                    null // let Whisper auto-detect the language
-            );
-
-            if (ai.text() == null || ai.text().isBlank()) {
-                log("Whisper returned empty transcription.");
-                return null;
+    // Detect likely language from text using Unicode character blocks.
+// Returns an ISO-639-1 code Whisper understands, or null for auto-detect.
+    private static String detectLanguage(String... texts) {
+        for (String text : texts) {
+            if (text == null || text.isBlank()) continue;
+            for (char c : text.toCharArray()) {
+                Character.UnicodeBlock block = Character.UnicodeBlock.of(c);
+                if (block == Character.UnicodeBlock.HEBREW)                return "he";
+                if (block == Character.UnicodeBlock.ARABIC)                return "ar";
+                if (block == Character.UnicodeBlock.CYRILLIC)              return "ru";
+                if (block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS) return "zh";
+                if (block == Character.UnicodeBlock.HIRAGANA
+                        || block == Character.UnicodeBlock.KATAKANA)              return "ja";
+                if (block == Character.UnicodeBlock.HANGUL_SYLLABLES)      return "ko";
+                if (block == Character.UnicodeBlock.GREEK)                 return "el";
+                if (block == Character.UnicodeBlock.THAI)                  return "th";
             }
-
-            log("Whisper transcribed %d chars in language '%s'"
-                    .formatted(ai.text().length(), ai.language()));
-
-            // Build a TrackMetadata using the transcribed lyrics as a search hint.
-            // We carry over any existing tags that weren't blank — they may still
-            // be correct even if the full match scored poorly.
-            return TrackMetadata.builder(audioPath.toString())
-                    .title(existing.title())          // keep existing title hint
-                    .artist(existing.artist())         // keep existing artist hint
-                    .lyrics(ai.text())                 // NEW: from Whisper
-                    .durationSeconds(ai.durationSeconds() > 0 ? ai.durationSeconds() : existing.durationSeconds())
-                    .build();
-
-        } catch (Exception e) {
-            log("AI fallback error: " + e.getMessage());
-            return null;
         }
+        return null; // null = let Whisper auto-detect
     }
-
     // ------------------------------------------------------------------
     // Internal: merge two metadata objects
     // ------------------------------------------------------------------
 
-    // Merge API metadata (preferred) with AI metadata (fallback for missing fields).
-    // API metadata wins for every field it has — AI fills in the gaps.
-    private static TrackMetadata merge(TrackMetadata api, TrackMetadata ai) {
-        if (api == null) return ai;
-        if (ai  == null) return api;
 
-        // Use the filepath from whichever source has it
-        String filepath = api.filepath() != null && !api.filepath().isBlank()
-                ? api.filepath() : ai.filepath();
+
+
+    // Merge two metadata objects, taking any non-null field from either source.
+// Unlike merge(), this doesn't prefer one source over the other —
+// it fills in any field that's missing from the primary with whatever the secondary has.
+    private static TrackMetadata mergeAll(TrackMetadata primary, TrackMetadata secondary) {
+        if (primary   == null) return secondary;
+        if (secondary == null) return primary;
+
+        String filepath = primary.filepath() != null && !primary.filepath().isBlank()
+                ? primary.filepath() : secondary.filepath();
 
         return TrackMetadata.builder(filepath)
-                .title(       firstNonNull(api.title(),        ai.title()))
-                .artist(      firstNonNull(api.artist(),       ai.artist()))
-                .album(       firstNonNull(api.album(),        ai.album()))
-                .albumArtist( firstNonNull(api.albumArtist(),  ai.albumArtist()))
-                .trackNumber( firstNonNull(api.trackNumber(),  ai.trackNumber()))
-                .year(        firstNonNull(api.year(),         ai.year()))
-                .genre(       firstNonNull(api.genre(),        ai.genre()))
-                // Lyrics come from AI (Whisper) — API sources rarely return them
-                .lyrics(      firstNonNull(ai.lyrics(),        api.lyrics()))
-                .durationSeconds(firstNonNullObj(api.durationSeconds(), ai.durationSeconds()))
-                .mimeType(    firstNonNull(api.mimeType(),     ai.mimeType()))
+                .title(       firstNonNull(primary.title(),        secondary.title()))
+                .artist(      firstNonNull(primary.artist(),       secondary.artist()))
+                .album(       firstNonNull(primary.album(),        secondary.album()))
+                .albumArtist( firstNonNull(primary.albumArtist(),  secondary.albumArtist()))
+                .trackNumber( firstNonNull(primary.trackNumber(),  secondary.trackNumber()))
+                .year(        firstNonNull(primary.year(),         secondary.year()))
+                .genre(       firstNonNull(primary.genre(),        secondary.genre()))
+                // Genius lyrics always win — they're the most accurate source
+                .lyrics(      firstNonNull(secondary.lyrics(),     primary.lyrics()))
+                .durationSeconds(firstNonNullObj(primary.durationSeconds(), secondary.durationSeconds()))
+                .mimeType(    firstNonNull(primary.mimeType(),     secondary.mimeType()))
                 .build();
     }
 
@@ -284,6 +421,8 @@ public final class LyrifyManager {
     // ------------------------------------------------------------------
 
     private boolean writeMetadata(Path path, TrackMetadata meta) {
+        // Track the final path (may change if renamed)
+        Path finalPath = path;
         try {
             Map<String, String> updates = new java.util.LinkedHashMap<>();
             if (meta.title()       != null) updates.put("title",       meta.title());
@@ -296,9 +435,67 @@ public final class LyrifyManager {
             if (meta.lyrics()      != null) updates.put("lyrics",      meta.lyrics());
             FileInterface.modifyMetadata(path, updates, null);
             log("Metadata written to: " + path.getFileName());
+
+// Rename the file to match the new metadata if we have title + artist
+            if (meta.title() != null && meta.artist() != null) {
+                try {
+                    String ext = path.getFileName().toString();
+                    ext = ext.contains(".") ? ext.substring(ext.lastIndexOf('.')) : "";
+                    String safeName = (meta.artist() + " - " + meta.title())
+                            .replaceAll("[\\\\/:*?\"<>|]", "_")
+                            .strip();
+                    Path newPath = path.getParent().resolve(safeName + ext);
+                    if (!newPath.equals(path)) {
+                        java.nio.file.Files.move(path, newPath,
+                                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                        log("Renamed: " + path.getFileName() + " → " + newPath.getFileName());
+                        finalPath = newPath; // use new path for LRC
+                    }
+                } catch (Exception e) {
+                    log("WARNING: rename failed — " + e.getMessage());
+                }
+            }
+
+
+            // Write Lyrify processed tag using TXXX frame
+            try {
+                org.jaudiotagger.audio.AudioFile af =
+                        org.jaudiotagger.audio.AudioFileIO.read(finalPath.toFile());
+                org.jaudiotagger.tag.Tag tag = af.getTagOrCreateAndSetDefault();
+                tag.getClass().getMethod("setField",
+                                org.jaudiotagger.tag.FieldKey.class, String[].class)
+                        .invoke(tag, org.jaudiotagger.tag.FieldKey.COMMENT,
+                                new String[]{"Lyrify-processed"});
+                af.commit();
+                log("Lyrify processed tag written to: " + finalPath.getFileName());
+            } catch (Exception e) {
+                log("WARNING: could not write processed tag — " + e.getMessage());
+            }
+
+// Generate LRC file using the final (possibly renamed) path
+            if (meta.lyrics() != null && !meta.lyrics().isBlank()) {
+                try {
+                    String[] lines = meta.lyrics().split("\r\n");
+                    double totalDur = meta.durationSeconds() != null ? meta.durationSeconds() : 180.0;
+                    double step = totalDur / Math.max(lines.length, 1);
+                    List<lyrify.FileInterface.LrcLine> lrcLines = new java.util.ArrayList<>();
+                    for (int i = 0; i < lines.length; i++) {
+                        if (!lines[i].isBlank()) {
+                            lrcLines.add(new lyrify.FileInterface.LrcLine(
+                                    (int)(i * step * 1000), lines[i].strip()));
+                        }
+                    }
+                    Path lrcPath = FileInterface.createLrcFile(finalPath, lrcLines, meta, null);
+                    log("LRC file created: " + lrcPath.getFileName());
+                } catch (Exception e) {
+                    log("WARNING: LRC generation failed — " + e.getMessage());
+                }
+            }
+
             return true;
         } catch (LyrifyException e) {
             log("ERROR writing metadata: " + e.getMessage());
+            log("ERROR cause: " + (e.getCause() != null ? e.getCause().getMessage() : "no cause"));
             return false;
         }
     }

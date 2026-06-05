@@ -3,10 +3,7 @@ package lyrify.FileInterface;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Immutable metadata container for a single audio track.
- * Uses a builder for construction; null fields indicate missing data.
- */
+
 //record for metadata
 public record TrackMetadata(
         String  filepath,
@@ -23,7 +20,7 @@ public record TrackMetadata(
         Long    fileSizeBytes,
         String  lastModified
 ) {
-    //arraylist of the missing fields, creates a copy so that we dont give immutable data to
+    //arraylist of the missing fields, creates a copy so that we don't give immutable data to
     public List<String> missingFields() {
         List<String> missing = new ArrayList<>();
         if (title  == null) missing.add("title");
@@ -39,7 +36,6 @@ public record TrackMetadata(
         return missingFields().isEmpty();
     }
 
-    /** Copy this record with selected fields overridden. */
     public Builder toBuilder() {
         return new Builder(filepath)
                 .title(title).artist(artist).album(album).albumArtist(albumArtist)
@@ -64,9 +60,7 @@ public record TrackMetadata(
         private Long   fileSizeBytes;
 
         public Builder(String filepath) {
-            if (filepath == null || filepath.isBlank())
-                throw new IllegalArgumentException("filepath must not be blank");
-            this.filepath = filepath;
+            this.filepath = (filepath == null || filepath.isBlank()) ? "_api_result_" : filepath;
         }
 
         public Builder title(String v)           { title = v;           return this; }

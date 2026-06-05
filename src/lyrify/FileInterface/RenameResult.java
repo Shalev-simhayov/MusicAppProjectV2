@@ -1,14 +1,5 @@
 package lyrify.FileInterface;
 
-/**
- * Outcome of a single file in a {@link FileInterface#batchRename} operation.
- *
- * @param originalPath  absolute path before rename
- * @param proposedPath  what the new path would be (null if skipped before planning)
- * @param renamed       true only when the file was actually moved on disk
- * @param skipped       true when the rename was intentionally not performed
- * @param reason        human-readable explanation when skipped or failed
- */
 public record RenameResult(
         String  originalPath,
         String  proposedPath,

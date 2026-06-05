@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+
 // Identifies audio by fingerprint using AcoustID + Chromaprint (fpcalc).
 // Most reliable source — works even if all existing tags are wrong.
 // Requires fpcalc installed on PATH. Free API key from acoustid.org.
@@ -22,23 +23,15 @@ public final class AcoustIdClient {
     private static final String BASE_URL    = "https://api.acoustid.org/v2";
     private static final String SOURCE_NAME = "AcoustID";
 
-    /**
-     * AcoustID requires a free API key — register at https://acoustid.org/login
-     * The key is passed as a query parameter on every request.
-     */
+
     private final String apiKey;
 
-    /** Shared HTTP client. */
     private final ApiClient http;
 
     // ------------------------------------------------------------------
     // Constructor
     // ------------------------------------------------------------------
 
-    /**
-     * @param http   shared {@link ApiClient} instance
-     * @param apiKey your AcoustID API key (register free at acoustid.org)
-     */
     public AcoustIdClient(ApiClient http, String apiKey) {
         if (apiKey == null || apiKey.isBlank())
             throw new IllegalArgumentException("AcoustID API key must not be blank");
@@ -50,19 +43,6 @@ public final class AcoustIdClient {
     // Public API
     // ------------------------------------------------------------------
 
-    /**
-     * Identify an audio file by its acoustic fingerprint.
-     *
-     * <p>This method:
-     * <ol>
-     *   <li>Runs {@code fpcalc} on the file to generate a fingerprint</li>
-     *   <li>Sends the fingerprint to the AcoustID API</li>
-     *   <li>Returns the best matching {@link TrackMetadata}</li>
-     * </ol>
-     *
-     * @param audioFile path to the audio file to identify
-     * @return {@link ApiResult} — always non-null
-     */
     public ApiResult identify(Path audioFile) {
         // Step 1: generate fingerprint via fpcalc
         FingerprintResult fp;
@@ -76,54 +56,36 @@ public final class AcoustIdClient {
         return lookup(fp.fingerprint(), fp.duration());
     }
 
-    /**
-     * Look up a pre-computed fingerprint directly — useful if you already
-     * have a fingerprint from a previous run (e.g. stored in the cache)
-     * and want to avoid re-running {@code fpcalc}.
-     *
-     * @param fingerprint the raw Chromaprint fingerprint string
-     * @param duration    audio duration in seconds
-     * @return {@link ApiResult} — always non-null
-     */
+    // Use this overload if you already have a fingerprint cached from a previous run —
+    // skips the fpcalc subprocess entirely.
     public ApiResult lookup(String fingerprint, double duration) {
-        String url     = buildUrl(fingerprint, duration);
-        String rawJson;
-
         try {
-            rawJson = http.get(SOURCE_NAME, url);
+            String formBody = "client=" + ApiClient.encode(apiKey)
+                    + "&meta=recordings+releasegroups"
+                    + "&duration=" + (int) Math.round(duration)
+                    + "&fingerprint=" + ApiClient.encode(fingerprint);
+            System.out.println("[AcoustID DEBUG] formBody length: " + formBody.length());
+            System.out.println("[AcoustID DEBUG] starts with: " + formBody.substring(0, Math.min(100, formBody.length())));
+            String rawJson = http.post(SOURCE_NAME, BASE_URL + "/lookup", formBody);
+            return parse(rawJson, duration);
         } catch (ApiException e) {
             return ApiResult.error(SOURCE_NAME, e.getMessage());
         }
-
-        return parse(rawJson, duration);
     }
 
     // ------------------------------------------------------------------
     // Fingerprint generation (fpcalc)
     // ------------------------------------------------------------------
 
-    /**
-     * Holds the output of a successful {@code fpcalc} run.
-     *
-     * @param fingerprint raw Chromaprint fingerprint string
-     * @param duration    audio duration in seconds
-     */
     public record FingerprintResult(String fingerprint, double duration) {}
 
-    /**
-     * Run {@code fpcalc} as an external process to generate a fingerprint.
-     *
-     * <p>{@code fpcalc} is part of Chromaprint and must be installed
-     * separately. It outputs plain text in this format:
-     * <pre>
-     * DURATION=213
-     * FINGERPRINT=AQADtMmybckm...
-     * </pre>
-     *
-     * @throws FingerprintException if fpcalc is not found or returns an error
-     */
+    // fpcalc outputs plain text in this format:
+    //   DURATION=213
+    //   FINGERPRINT=AQADtMmybckm...
     private static FingerprintResult fingerprint(Path audioFile) throws FingerprintException {
-        ProcessBuilder pb = new ProcessBuilder("fpcalc", audioFile.toString());
+        // Try to find fpcalc in common locations if not on PATH
+        String fpcalc = resolveFpcalc();
+        ProcessBuilder pb = new ProcessBuilder(fpcalc, audioFile.toString());
         pb.redirectErrorStream(true); // merge stderr into stdout for easy reading
 
         Process process;
@@ -169,58 +131,33 @@ public final class AcoustIdClient {
         return new FingerprintResult(fingerprintValue, durationValue);
     }
 
+
+    private static String resolveFpcalc() {
+        // 1. Check next to the jar (project root / app directory)
+        String[] candidates = {
+                System.getProperty("user.dir") + "\\fpcalc.exe",
+                System.getProperty("user.dir") + "\\chromaprint-fpcalc-1.6.0-windows-x86_64\\fpcalc.exe",
+                // Also try the app bundle location when running as exe
+                System.getProperty("java.home") + "\\..\\fpcalc.exe",
+        };
+        for (String path : candidates) {
+            if (new java.io.File(path).exists()) {
+                return path;
+            }
+        }
+        // 2. Fall back to PATH
+        return "fpcalc";
+    }
     // ------------------------------------------------------------------
     // URL builder
     // ------------------------------------------------------------------
 
-    /**
-     * Build the AcoustID lookup URL.
-     *
-     * <p>We request {@code meta=recordings+releasegroups} so the response
-     * includes track title, artist, and album info — without this flag
-     * AcoustID only returns its internal recording IDs with no names.
-     */
-    private String buildUrl(String fingerprint, double duration) {
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("client",      apiKey);
-        params.put("meta",        "recordings+releasegroups+compress");
-        params.put("duration",    String.valueOf((int) Math.round(duration)));
-        params.put("fingerprint", fingerprint);
-        return BASE_URL + "/lookup?" + ApiClient.buildQuery(params);
-    }
+
 
     // ------------------------------------------------------------------
     // Response parser
     // ------------------------------------------------------------------
 
-    /**
-     * Parse the AcoustID JSON response into an {@link ApiResult}.
-     *
-     * <p>AcoustID response structure (simplified):
-     * <pre>{@code
-     * {
-     *   "status": "ok",
-     *   "results": [
-     *     {
-     *       "score": 0.921,           ← match confidence 0.0-1.0 (already our scale!)
-     *       "recordings": [
-     *         {
-     *           "title": "Bohemian Rhapsody",
-     *           "artists": [{ "name": "Queen" }],
-     *           "releasegroups": [
-     *             {
-     *               "title": "A Night at the Opera",
-     *               "type": "Album",
-     *               "secondarytypes": []
-     *             }
-     *           ]
-     *         }
-     *       ]
-     *     }
-     *   ]
-     * }
-     * }</pre>
-     */
     private static ApiResult parse(String rawJson, double duration) {
         JSONObject root;
         try {
@@ -258,7 +195,7 @@ public final class AcoustIdClient {
         String artist = parseArtists(recording.optJSONArray("artists"));
         String album  = parseReleaseGroup(recording.optJSONArray("releasegroups"));
 
-        TrackMetadata metadata = TrackMetadata.builder("")
+        TrackMetadata metadata = TrackMetadata.builder(null)
                 .title(title)
                 .artist(artist)
                 .album(album)
@@ -268,7 +205,6 @@ public final class AcoustIdClient {
         return ApiResult.of(SOURCE_NAME, metadata, confidence, rawJson);
     }
 
-    /** Extract a comma-joined artist name string from an AcoustID artists array. */
     private static String parseArtists(JSONArray artists) {
         if (artists == null || artists.isEmpty()) return null;
         StringBuilder sb = new StringBuilder();
@@ -280,10 +216,7 @@ public final class AcoustIdClient {
         return result.isEmpty() ? null : result;
     }
 
-    /**
-     * Pick the most relevant release group (album) from the list.
-     * We prefer "Album" type over singles, EPs, compilations, etc.
-     */
+    // Prefers "Album" type over singles, EPs, and compilations
     private static String parseReleaseGroup(JSONArray groups) {
         if (groups == null || groups.isEmpty()) return null;
 
@@ -305,7 +238,6 @@ public final class AcoustIdClient {
     // FingerprintException — internal only
     // ------------------------------------------------------------------
 
-    /** Thrown when {@code fpcalc} cannot produce a fingerprint. */
     static final class FingerprintException extends Exception {
         FingerprintException(String message) { super(message); }
     }

@@ -14,8 +14,12 @@ public class MainApp extends Application {
     // Shared state passed to every view so they all see the same data
     private final AppState state = new AppState();
 
+
     @Override
     public void start(Stage primaryStage) {
+        // Pre-load personal API keys
+        state.acoustIdKeyProperty().set(LyrifyConfig.ACOUSTID_KEY);
+        state.geniusTokenProperty().set(LyrifyConfig.GENIUS_TOKEN);
 
         // -- Root layout --
         // BorderPane divides the window into 5 zones: top, bottom, left, right, centre.
@@ -52,7 +56,7 @@ public class MainApp extends Application {
 
     // JavaFX needs this main() only when launching without a JavaFX-aware launcher.
     // The launch() call hands control to JavaFX which then calls start() above.
-    public static void main(String[] args) {
+    static void main(String[] args) {
         launch(args);
     }
 }

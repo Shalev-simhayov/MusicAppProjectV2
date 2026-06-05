@@ -17,5 +17,14 @@
     <orderEntry type="library" name="javafx.base" level="project" />
     <orderEntry type="library" name="json-20240303" level="project" />
     <orderEntry type="library" name="Python 3.12 (MusicAppProjectVer2) interpreter library" level="application" />
+    <orderEntry type="module-library">
+      <library>
+        <CLASSES>
+          <root url="jar://$MODULE_DIR$/jaudiotagger-3.0.1.jar!/" />
+        </CLASSES>
+        <JAVADOC />
+        <SOURCES />
+      </library>
+    </orderEntry>
   </component>
 </module>

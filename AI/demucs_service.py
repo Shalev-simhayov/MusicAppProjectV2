@@ -13,7 +13,7 @@ from models import SeparateRequest, SeparateResponse
 # subsequent request doesn't pay the cost of loading from disk again.
 # htdemucs is the default 4-stem model (drums, bass, other, vocals).
 # We only use the vocals stem, but the model separates all four.
-_MODEL_NAME = "htdemucs"
+_MODEL_NAME = "mdx_extra"
 _model = None
 
 def _get_model():
@@ -70,7 +70,9 @@ def separate(req: SeparateRequest) -> SeparateResponse:
 
         # Write the vocal stem to disk as a wav file
         vocal_path = out_dir / f"{audio_path.stem}_vocals.wav"
-        save_audio(vocals, str(vocal_path), samplerate=model.samplerate)
+        # Convert to numpy and write with soundfile (no TorchCodec needed)
+        vocals_np = vocals.cpu().numpy().T  # shape: (samples, channels)
+        sf.write(str(vocal_path), vocals_np, model.samplerate)
 
         # Calculate duration from the sample count
         num_samples = vocals.shape[-1]

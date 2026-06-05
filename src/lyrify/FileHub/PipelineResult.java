@@ -18,6 +18,7 @@ public record PipelineResult(
     public enum Stage {
         API,        // one of the API clients found a good match
         AI,         // the Demucs + Whisper fallback produced the result
+        CACHED,     //cached tag
         NONE        // nothing reached the acceptance threshold
     }
 
@@ -42,6 +43,19 @@ public record PipelineResult(
     public static PipelineResult noMatch(String filepath, double bestScore) {
         return new PipelineResult(filepath, null, bestScore, Stage.NONE, false, false,
                 "No accurate match found (best score %.2f)".formatted(bestScore));
+    }
+
+    // File was found in cache — no changes made, shown in results as-is
+    public static PipelineResult cached(String filepath, TrackMetadata metadata) {
+        return new PipelineResult(
+                filepath,
+                metadata,
+                1.0,           // score of 1.0 — we trust the cached data
+                Stage.CACHED,  // new stage value
+                false,         // doesn't need review
+                false,         // nothing written
+                "Previously scanned — no changes made"
+        );
     }
 
     public boolean isUsable() { return metadata != null && stage != Stage.NONE; }

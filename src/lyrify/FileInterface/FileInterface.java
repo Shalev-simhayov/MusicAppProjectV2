@@ -2,6 +2,9 @@ package lyrify.FileInterface;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.jaudiotagger.audio.AudioFile;
+import org.jaudiotagger.audio.AudioFileIO;
+import org.jaudiotagger.tag.FieldKey;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -17,29 +20,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-/**
- * Lyrify — File Interface
- *
- * <p>All ten file-interface operations for the music metadata pipeline:
- * <ol>
- *   <li>{@link #acceptPath}         – validate and resolve a filepath</li>
- *   <li>{@link #fileSearch}         – walk a directory for audio files</li>
- *   <li>{@link #filterByMimeType}   – filter paths by MIME / extension</li>
- *   <li>{@link #scanMetadata}       – read tags from an audio file</li>
- *   <li>{@link #createMetadataTag}  – write tag updates to a file</li>
- *   <li>{@link #modifyMetadata}     – validated alias for createMetadataTag</li>
- *   <li>{@link #createLrcFile}      – write a .lrc lyrics file</li>
- *   <li>{@link #validateLrcSync}    – check LRC timestamps vs audio duration</li>
- *   <li>{@link #batchRename}        – rename files from metadata templates</li>
- *   <li>{@link #backupMetadata}     – snapshot current tags to JSON</li>
- *   <li>{@link #restoreMetadata}    – re-apply tags from a backup JSON</li>
- *   <li>{@link #scanWithCache}      – scan with mtime+size change detection</li>
- *   <li>{@link #scanDirectory}      – full pipeline entry point</li>
- * </ol>
- *
- * <p>Requires: {@code org.json} on the classpath for JSON cache/backup I/O.
- * Tag read/write requires {@code jaudiotagger} (graceful error if absent).
- */
 public final class FileInterface {
 
     // ------------------------------------------------------------------
@@ -68,13 +48,6 @@ public final class FileInterface {
     // 1. Accept filepath
     // ------------------------------------------------------------------
 
-    /**
-     * Validate and resolve a filepath or directory path.
-     *
-     * @param path raw path string (may include {@code ~})
-     * @return resolved, absolute {@link Path}
-     * @throws LyrifyException if the path does not exist
-     */
     public static Path acceptPath(String path) throws LyrifyException {
         if (path == null || path.isBlank())
             throw new LyrifyException("Path must not be blank.");
@@ -95,22 +68,11 @@ public final class FileInterface {
     // 2. File search
     // ------------------------------------------------------------------
 
-    /**
-     * Walk {@code root} and return all audio files matching the supported
-     * extensions, sorted by absolute path.
-     *
-     * @param root      file or directory to search
-     * @param recursive whether to descend into subdirectories
-     * @return sorted list of matching {@link Path}s
-     */
     public static List<Path> fileSearch(Path root, boolean recursive) throws LyrifyException {
         return fileSearch(root, recursive, AUDIO_EXTENSIONS);
     }
 
-    /**
-     * Variant of {@link #fileSearch(Path, boolean)} with a custom extension set.
-     * Extensions must be lowercase and include the leading dot (e.g. {@code ".flac"}).
-     */
+    // Extensions must be lowercase and include the leading dot (e.g. ".flac")
     public static List<Path> fileSearch(Path root, boolean recursive, Set<String> extensions)
             throws LyrifyException {
 
@@ -141,17 +103,10 @@ public final class FileInterface {
     // 3. Filter by MIME type
     // ------------------------------------------------------------------
 
-    /**
-     * Filter a list of paths to those whose inferred MIME type starts with
-     * {@code "audio/"}.  Falls back to extension-based detection.
-     */
     public static List<Path> filterByMimeType(List<Path> files) {
         return filterByMimeType(files, "audio/");
     }
 
-    /**
-     * Variant allowing a custom MIME prefix (e.g. {@code "video/"}).
-     */
     public static List<Path> filterByMimeType(List<Path> files, String mimePrefix) {
         return files.stream()
                 .filter(p -> {
@@ -165,16 +120,6 @@ public final class FileInterface {
     // 4. Scan metadata  (read tags)
     // ------------------------------------------------------------------
 
-    /**
-     * Read ID3/Vorbis/MP4 tags from an audio file.
-     *
-     * <p>Requires {@code jaudiotagger} on the classpath.  If the library is
-     * absent, a minimal {@link TrackMetadata} with only filesystem attributes
-     * is returned and a warning is printed to stderr.
-     *
-     * @param path audio file to scan
-     * @return populated {@link TrackMetadata}
-     */
     public static TrackMetadata scanMetadata(Path path) throws LyrifyException {
         if (!Files.isRegularFile(path))
             throw new LyrifyException("Not a regular file: " + path);
@@ -236,16 +181,8 @@ public final class FileInterface {
     // 5. Create metadata tag  (write tags)
     // ------------------------------------------------------------------
 
-    /**
-     * Write tag fields from {@code updates} into the file at {@code path}.
-     * Existing tags not present in {@code updates} are preserved.
-     *
-     * <p>Supported keys: {@code title, artist, album, albumArtist, trackNumber,
-     * year, genre, lyrics}.
-     *
-     * @return refreshed {@link TrackMetadata} after writing
-     */
-    public static TrackMetadata createMetadataTag(Path path, Map<String, String> updates)
+    // Supported keys: title, artist, album, albumArtist, trackNumber, year, genre, lyrics
+    public static void createMetadataTag(Path path, Map<String, String> updates)
             throws LyrifyException {
 
         if (updates == null || updates.isEmpty())
@@ -253,7 +190,6 @@ public final class FileInterface {
 
         try {
             Class<?> afClass    = Class.forName("org.jaudiotagger.audio.AudioFileIO");
-            Class<?> tagClass   = Class.forName("org.jaudiotagger.tag.Tag");
             Class<?> fieldEnum  = Class.forName("org.jaudiotagger.tag.FieldKey");
 
             Object af  = afClass.getMethod("read", java.io.File.class)
@@ -270,14 +206,14 @@ public final class FileInterface {
                     "genre",       "GENRE",
                     "lyrics",      "LYRICS"
             );
-
+            keyMap.put("comment", "COMMENT");
             for (var entry : updates.entrySet()) {
                 String fieldName = keyMap.get(entry.getKey());
                 if (fieldName == null) continue;
                 Object fieldKey = fieldEnum.getMethod("valueOf", String.class)
                                            .invoke(null, fieldName);
-                tagClass.getMethod("setField", fieldEnum, String.class)
-                        .invoke(tag, fieldKey, entry.getValue());
+                tag.getClass().getMethod("setField", fieldEnum, String[].class)
+                        .invoke(tag, fieldKey, new String[]{entry.getValue()});
             }
 
             af.getClass().getMethod("commit").invoke(af);
@@ -287,22 +223,30 @@ public final class FileInterface {
         } catch (Exception e) {
             throw new LyrifyException("Failed to write tags to: " + path, e);
         }
-
-        return scanMetadata(path);
     }
 
+
+    //function to check for custom metadata tag
+    public static boolean isAlreadyProcessed(Path path) {
+        try {
+            org.jaudiotagger.audio.AudioFile f = AudioFileIO.read(path.toFile());
+            org.jaudiotagger.tag.Tag tag = f.getTag();
+            if (tag == null) return false;
+            String comment = tag.getFirst(FieldKey.COMMENT);
+            System.out.println("[Processed] Comment: '" + comment + "' for " + path.getFileName());
+            return comment != null && comment.contains("Lyrify-processed");
+        } catch (Exception e) {
+            System.out.println("[Processed] Error: " + e.getMessage());
+            return false;
+        }
+    }
     // ------------------------------------------------------------------
     // 6. Modify metadata  (validated alias)
     // ------------------------------------------------------------------
 
-    /**
-     * Validated wrapper around {@link #createMetadataTag}.
-     *
-     * <p>{@code allowedFields} restricts which keys may be modified — useful
-     * as a safety guard in batch operations.  Pass {@code null} to allow all
-     * supported fields.
-     */
-    public static TrackMetadata modifyMetadata(
+    // allowedFields restricts which keys may be modified — a safety guard for batch ops.
+    // Pass null to allow all supported fields.
+    public static void modifyMetadata(
             Path path,
             Map<String, String> updates,
             Set<String> allowedFields) throws LyrifyException {
@@ -321,23 +265,13 @@ public final class FileInterface {
         if (sanitised.isEmpty())
             throw new LyrifyException("No valid/allowed fields supplied to modifyMetadata.");
 
-        return createMetadataTag(path, sanitised);
+        createMetadataTag(path, sanitised);
     }
 
     // ------------------------------------------------------------------
     // 7. Create LRC file
     // ------------------------------------------------------------------
 
-    /**
-     * Write a {@code .lrc} file alongside (or at {@code outputPath}) the
-     * audio file.  Lines are sorted by timestamp before writing.
-     *
-     * @param audioPath  source audio file (used to derive default output path)
-     * @param lines      lyric lines — need not be pre-sorted
-     * @param metadata   optional metadata for LRC header tags
-     * @param outputPath explicit destination, or {@code null} to place next to audio
-     * @return path of the written {@code .lrc} file
-     */
     public static Path createLrcFile(
             Path audioPath,
             List<LrcLine> lines,
@@ -360,6 +294,10 @@ public final class FileInterface {
         }
         lrcLines.add("[by:Lyrify]");
         lrcLines.add("[ve:1.0]");
+        if (metadata != null && metadata.lyrics() != null
+                && metadata.lyrics().startsWith("[AI-Generated")) {
+            lrcLines.add("[ai:true]");
+        }
         lrcLines.add("");
 
         // Body — sorted ascending
@@ -369,7 +307,7 @@ public final class FileInterface {
              .forEach(lrcLines::add);
 
         try {
-            Files.writeString(lrcPath, String.join("\n", lrcLines), StandardCharsets.UTF_8);
+            Files.writeString(lrcPath, String.join("\r\n", lrcLines), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new LyrifyException("Cannot write LRC file: " + lrcPath, e);
         }
@@ -381,19 +319,6 @@ public final class FileInterface {
     // 8. Validate LRC timestamp sync
     // ------------------------------------------------------------------
 
-    /**
-     * Parse an LRC file and verify:
-     * <ul>
-     *   <li>Timestamps are monotonically increasing</li>
-     *   <li>No timestamp exceeds audio duration (within {@code toleranceSeconds})</li>
-     *   <li>No duplicate timestamps</li>
-     * </ul>
-     *
-     * @param lrcPath          path to the {@code .lrc} file
-     * @param durationSeconds  total audio duration in seconds
-     * @param toleranceSecs    allowed overshoot in seconds (typically 2.0)
-     * @return {@link LrcValidationReport}
-     */
     public static LrcValidationReport validateLrcSync(
             Path lrcPath,
             double durationSeconds,
@@ -448,19 +373,8 @@ public final class FileInterface {
     // 9. Batch rename
     // ------------------------------------------------------------------
 
-    /**
-     * Rename audio files using a template string.
-     *
-     * <p>Template tokens: {@code {title}}, {@code {artist}}, {@code {album}},
-     * {@code {year}}, {@code {genre}}, {@code {trackNumber}} (zero-padded to 2 digits).
-     * Example: {@code "{trackNumber} - {artist} - {title}"}
-     *
-     * @param files     files to rename
-     * @param metadatas map of absolute-path-string → TrackMetadata
-     * @param template  filename template (without extension)
-     * @param dryRun    if {@code true}, plan only — no filesystem changes
-     * @return list of {@link RenameResult} for every input file
-     */
+    // Template tokens: {title} {artist} {album} {year} {genre} {trackNumber} (zero-padded)
+    // Example: "{trackNumber} - {artist} - {title}"
     public static List<RenameResult> batchRename(
             List<Path> files,
             Map<String, TrackMetadata> metadatas,
@@ -524,20 +438,13 @@ public final class FileInterface {
     // 10a. Backup metadata
     // ------------------------------------------------------------------
 
-    /**
-     * Serialise current metadata for {@code files} into a timestamped JSON
-     * backup file inside {@code backupDir} (defaults to the parent of the
-     * first file).
-     *
-     * @return path to the written backup JSON file
-     */
     public static Path backupMetadata(List<Path> files, Path backupDir)
             throws LyrifyException {
 
         if (files == null || files.isEmpty())
             throw new LyrifyException("No files provided for backup.");
 
-        Path dir = backupDir != null ? backupDir : files.get(0).getParent();
+        Path dir = backupDir != null ? backupDir : files.getFirst().getParent();
         try {
             Files.createDirectories(dir);
         } catch (IOException e) {
@@ -573,12 +480,6 @@ public final class FileInterface {
     // 10b. Restore metadata
     // ------------------------------------------------------------------
 
-    /**
-     * Re-apply tags from a backup JSON file produced by {@link #backupMetadata}.
-     *
-     * @return list of status maps with keys {@code filepath}, {@code status},
-     *         {@code error}
-     */
     public static List<Map<String, String>> restoreMetadata(Path backupPath)
             throws LyrifyException {
 
@@ -603,9 +504,6 @@ public final class FileInterface {
             }
 
             try {
-                TrackMetadata meta = new MetadataBackup(obj).toMetadata();    // reuse toJson trick
-                // Actually reconstruct via MetadataBackup.from(meta).toMetadata() is circular;
-                // build update map directly from the JSON
                 Map<String, String> updates = new LinkedHashMap<>();
                 putIfPresent(updates, obj, "title");
                 putIfPresent(updates, obj, "artist");
@@ -631,19 +529,13 @@ public final class FileInterface {
     // 11. Cache scan results
     // ------------------------------------------------------------------
 
-    /**
-     * Scan metadata for {@code files}, skipping any whose {@code mtime+size}
-     * fingerprint matches the on-disk cache.
-     *
-     * <p>Cache is stored at {@code cacheDir/.lyrify_cache.json}.
-     * Pass {@code null} for {@code cacheDir} to use the parent of the first file.
-     */
+    // Cache is stored at cacheDir/.lyrify_cache.json, keyed by mtime+size fingerprint
     public static List<ScanResult> scanWithCache(List<Path> files, Path cacheDir)
             throws LyrifyException {
 
         if (files.isEmpty()) return List.of();
 
-        Path dir = cacheDir != null ? cacheDir : files.get(0).getParent();
+        Path dir = cacheDir != null ? cacheDir : files.getFirst().getParent();
         Path cachePath = dir.resolve(CACHE_FILENAME);
 
         JSONObject cache = loadCache(cachePath);
@@ -688,23 +580,6 @@ public final class FileInterface {
     // 12. Full directory scan entry point
     // ------------------------------------------------------------------
 
-    /**
-     * High-level convenience method that chains the full file interface:
-     * <ol>
-     *   <li>Validate path</li>
-     *   <li>Search for audio files</li>
-     *   <li>Filter by MIME type</li>
-     *   <li>Optionally backup existing metadata</li>
-     *   <li>Scan with cache</li>
-     * </ol>
-     *
-     * @param root      directory to scan
-     * @param recursive whether to descend into subdirectories
-     * @param useCache  enable mtime+size caching
-     * @param backup    snapshot existing tags before scanning
-     * @param backupDir destination for backup JSON (null = same as root)
-     * @return scan results; backup file path is printed if created
-     */
     public static List<ScanResult> scanDirectory(
             String root,
             boolean recursive,
@@ -746,7 +621,7 @@ public final class FileInterface {
         return EXTENSION_MIME.getOrDefault(extension(p), null);
     }
 
-    /** mtime (epoch ms) + '_' + size in bytes */
+    // mtime (epoch ms) + '_' + size in bytes — used as the cache key
     private static String fingerprint(Path p) {
         try {
             BasicFileAttributes a = Files.readAttributes(p, BasicFileAttributes.class);
@@ -774,7 +649,7 @@ public final class FileInterface {
         }
     }
 
-    /** Remove filesystem-unsafe characters and trim. */
+    // Remove filesystem-unsafe characters and trim
     static String sanitiseFilename(String name) {
         // Normalise unicode
         name = Normalizer.normalize(name, Normalizer.Form.NFKD);
@@ -785,7 +660,7 @@ public final class FileInterface {
         return name.isEmpty() ? "unknown" : name;
     }
 
-    /** Reflectively read a tag field — returns null if missing/blank. */
+    // Reflective tag read — returns null if the field is missing or blank
     private static String tagStr(Object tag, Class<?> tagClass, Class<?> fieldEnum, String fieldName)
             throws Exception {
         Object key = fieldEnum.getMethod("valueOf", String.class).invoke(null, fieldName);

@@ -38,8 +38,6 @@ public final class AppState {
     // These are plain StringProperty / DoubleProperty so Settings view
     // can bind its text fields and sliders directly
     private final StringProperty acoustIdKey     = new SimpleStringProperty("");
-    private final StringProperty spotifyClientId = new SimpleStringProperty("");
-    private final StringProperty spotifySecret   = new SimpleStringProperty("");
     private final StringProperty geniusToken     = new SimpleStringProperty("");
 
     private final DoubleProperty acceptThreshold = new SimpleDoubleProperty(0.85);
@@ -74,8 +72,6 @@ public final class AppState {
 
     // API key properties
     public StringProperty acoustIdKeyProperty()     { return acoustIdKey; }
-    public StringProperty spotifyClientIdProperty() { return spotifyClientId; }
-    public StringProperty spotifySecretProperty()   { return spotifySecret; }
     public StringProperty geniusTokenProperty()     { return geniusToken; }
 
     // Threshold properties

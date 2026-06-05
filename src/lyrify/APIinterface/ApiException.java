@@ -1,11 +1,10 @@
 package lyrify.APIinterface;
 
 // Checked exception for API layer failures.
-// Always carries the source name (e.g. "Spotify") so you know which API failed.
+// Always carries the source name (e.g. "MusicBrainz") so you know which API failed.
 
 public final class ApiException extends Exception {
 
-    /** The API that produced this exception (e.g. "Spotify", "Genius"). */
     private final String source;
 
     public ApiException(String source, String message) {

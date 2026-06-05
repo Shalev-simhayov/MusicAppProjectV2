@@ -69,20 +69,6 @@ public class SettingsView {
                 false // not a password field — keys are long strings not secrets
         );
 
-        // Spotify — two fields
-        Node spotifyIdRow = apiKeyRow(
-                "Spotify Client ID",
-                "From developer.spotify.com/dashboard",
-                state.spotifyClientIdProperty(),
-                false
-        );
-        Node spotifySecretRow = apiKeyRow(
-                "Spotify Client Secret",
-                "Keep this private",
-                state.spotifySecretProperty(),
-                true // hide like a password
-        );
-
         // Genius token
         Node geniusRow = apiKeyRow(
                 "Genius Access Token",
@@ -94,7 +80,7 @@ public class SettingsView {
         card.getChildren().addAll(
                 heading, mbNote,
                 new Separator(),
-                acoustIdRow, spotifyIdRow, spotifySecretRow, geniusRow
+                acoustIdRow, geniusRow
         );
         return card;
     }

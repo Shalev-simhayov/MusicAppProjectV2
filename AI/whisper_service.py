@@ -7,7 +7,7 @@ from models import TranscribeRequest, TranscribeResponse
 # "large-v3" gives the best accuracy for lyrics — slower but worth it
 # since this only runs when API matching failed.
 # Swap to "medium" or "small" if you're on a low-VRAM machine.
-_MODEL_SIZE = "large-v3"
+_MODEL_SIZE = "medium"
 _model = None
 
 def _get_model():
@@ -37,6 +37,10 @@ def transcribe(req: TranscribeRequest) -> TranscribeResponse:
             "word_timestamps": True,
             # verbose=False suppresses Whisper's own progress output
             "verbose": False,
+            "beam_size": 5,        # default is 5, increase to 10 for better accuracy at cost of speed
+            "best_of": 5,          # number of candidates to consider
+            "temperature": 0.0,    # 0 = greedy decoding, most deterministic/accurate
+            "condition_on_previous_text": True,  # use previous segments as context
         }
 
         # Pass language hint if provided — speeds up transcription and

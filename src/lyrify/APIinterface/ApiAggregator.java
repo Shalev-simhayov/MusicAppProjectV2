@@ -13,8 +13,18 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 // Runs all enabled API clients and returns results ranked by confidence.
-// AcoustID runs first — short-circuits if confidence is high enough.
-// MusicBrainz, Spotify, and Genius run in parallel using Java 21 virtual threads.
+//
+// Two-pass approach:
+//   Pass 1 — AcoustID fingerprint identifies the song from audio alone.
+//             If it returns a usable result, we extract its title/artist
+//             and use them to enrich the second pass.
+//   Pass 2 — MusicBrainz and Genius run in parallel.
+//             They use the BEST available metadata — either from AcoustID
+//             (pass 1) or from the file's existing tags — whichever has more.
+//
+// This means even files with zero tags get identified: AcoustID fingerprints
+// the audio, then MusicBrainz and Genius fetch metadata and lyrics
+// using the title/artist AcoustID discovered.
 
 public final class ApiAggregator {
 
@@ -22,20 +32,15 @@ public final class ApiAggregator {
     // Fields
     // ------------------------------------------------------------------
 
-    /** Optional API clients — null means that source is disabled. */
+    // null means that source is disabled
     private final AcoustIdClient    acoustId;
     private final MusicBrainzClient musicBrainz;
-    private final SpotifyClient     spotify;
     private final GeniusClient      genius;
 
-    /**
-     * If any single API returns confidence >= this value, we skip querying
-     * the remaining APIs and return immediately.
-     * Set to 1.1 to disable short-circuiting entirely.
-     */
+    // If AcoustID returns confidence >= this, skip the other APIs entirely.
+    // Set to > 1.0 to disable short-circuiting.
     private final double shortCircuitThreshold;
 
-    /** Thread pool for parallel API calls. */
     private final ExecutorService executor;
 
     // ------------------------------------------------------------------
@@ -45,10 +50,8 @@ public final class ApiAggregator {
     private ApiAggregator(Builder b) {
         this.acoustId              = b.acoustId;
         this.musicBrainz           = b.musicBrainz;
-        this.spotify               = b.spotify;
         this.genius                = b.genius;
         this.shortCircuitThreshold = b.shortCircuitThreshold;
-        // Virtual threads (Java 21) — lightweight, one per task, no pooling overhead
         this.executor              = Executors.newVirtualThreadPerTaskExecutor();
     }
 
@@ -56,63 +59,111 @@ public final class ApiAggregator {
     // Public API
     // ------------------------------------------------------------------
 
-    /**
-     * Query all enabled APIs for the given audio file and return results
-     * sorted by confidence descending.
-     *
-     * <p>Usable results ({@link ApiResult#isUsable()}) appear first;
-     * errors and empty responses are included at the end for logging purposes.
-     *
-     * @param audioFile        the audio file to identify (used by AcoustID)
-     * @param existingMetadata any metadata already known about the file —
-     *                         used as query hints for MusicBrainz, Spotify, Genius
-     * @return list of {@link ApiResult}, sorted by confidence descending,
-     *         never null, may be empty
-     */
+
+     //Two-pass query:
+    // Pass 1 — AcoustID fingerprint (audio-based, no tags needed)
+    //Pass 2 — MusicBrainz / Genius using the best available
+    // metadata (AcoustID result if usable, else existing tags)
+
     public List<ApiResult> query(Path audioFile, TrackMetadata existingMetadata) {
         List<ApiResult> results = new ArrayList<>();
 
-        // Convenience shortcuts into existing metadata (may be null)
-        String title    = existingMetadata != null ? existingMetadata.title()    : null;
-        String artist   = existingMetadata != null ? existingMetadata.artist()   : null;
-        String album    = existingMetadata != null ? existingMetadata.album()    : null;
-        Double duration = existingMetadata != null ? existingMetadata.durationSeconds() : null;
+        // -- Existing tag fields (may all be null for untagged files) --
+        String existingTitle  = existingMetadata != null ? existingMetadata.title()           : null;
+        String existingArtist = existingMetadata != null ? existingMetadata.artist()          : null;
+        String existingAlbum  = existingMetadata != null ? existingMetadata.album()           : null;
+        Double existingDur    = existingMetadata != null ? existingMetadata.durationSeconds() : null;
 
-        // ---- Step 1: AcoustID first (synchronous) -------------------------
-        // AcoustID is the most reliable source because it uses the actual audio
-        // content rather than metadata. We run it first so we can short-circuit
-        // if we get a very high-confidence match.
+        // ── PASS 1: AcoustID fingerprint ─────────────────────────────────
+        // Works from audio content alone — doesn't need any existing tags.
+        // If it identifies the song, we use its title/artist in pass 2.
+
+        String queryTitle  = existingTitle;
+        String queryArtist = existingArtist;
+        String queryAlbum  = existingAlbum;
+        Double queryDur    = existingDur;
+
         if (acoustId != null && audioFile != null) {
             ApiResult acr = acoustId.identify(audioFile);
             results.add(acr);
             log(acr);
 
-            if (acr.isUsable() && acr.confidence() >= shortCircuitThreshold) {
-                System.out.printf("[Aggregator] Short-circuit: AcoustID confidence %.2f >= %.2f%n",
-                        acr.confidence(), shortCircuitThreshold);
-                return sorted(results);
+            if (acr.isUsable()) {
+                // Short-circuit: AcoustID is confident enough
+                if (acr.confidence() >= shortCircuitThreshold) {
+                    System.out.printf("[Aggregator] Short-circuit: AcoustID confidence %.2f >= %.2f%n",
+                            acr.confidence(), shortCircuitThreshold);
+
+                    // Still run Genius for lyrics and MusicBrainz for year/genre/track#
+                    // even on short-circuit — AcoustID doesn't return these fields
+                    if (acr.metadata() != null) {
+                        String scTitle  = acr.metadata().title();
+                        String scArtist = acr.metadata().artist();
+
+                        if (scTitle != null || scArtist != null) {
+                            // MusicBrainz — year, genre, track number
+                            if (musicBrainz != null) {
+                                try {
+                                    ApiResult mbResult = musicBrainz.search(
+                                            scTitle, scArtist, acr.metadata().album(),
+                                            acr.metadata().durationSeconds());
+                                    if (mbResult.isUsable()) { results.add(mbResult); log(mbResult); }
+                                } catch (Exception e) {
+                                    System.err.println("[Aggregator] MusicBrainz short-circuit failed: " + e.getMessage());
+                                }
+                            }
+
+                            // Genius — lyrics
+                            if (genius != null) {
+                                try {
+                                    ApiResult geniusResult = genius.search(scTitle, scArtist);
+                                    if (geniusResult.isUsable()) { results.add(geniusResult); log(geniusResult); }
+                                } catch (Exception e) {
+                                    System.err.println("[Aggregator] Genius short-circuit failed: " + e.getMessage());
+                                }
+                            }
+                        }
+                    }
+
+                    return sorted(results);
+                }
+
+                // AcoustID found something but below short-circuit threshold —
+                // use its metadata to enrich pass 2 queries.
+                // We prefer AcoustID's identified title/artist over existing tags
+                // because existing tags may be wrong (that's why we're scanning).
+                TrackMetadata acrMeta = acr.metadata();
+                if (acrMeta != null) {
+                    if (acrMeta.title()  != null) queryTitle  = acrMeta.title();
+                    if (acrMeta.artist() != null) queryArtist = acrMeta.artist();
+                    if (acrMeta.album()  != null) queryAlbum  = acrMeta.album();
+                    if (acrMeta.durationSeconds() != null) queryDur = acrMeta.durationSeconds();
+                    System.out.printf("[Aggregator] Pass 2 will use AcoustID hint: '%s' by '%s'%n",
+                            queryTitle, queryArtist);
+                }
             }
         }
 
-        // ---- Step 2: MusicBrainz, Spotify, Genius in parallel -------------
-        // These three are all metadata/lyrics lookups using text queries.
-        // Running them in parallel saves time since they don't depend on
-        // each other's results.
+        // ── PASS 2: MusicBrainz / Genius in parallel ─────────────────────
+        // Use the best available title/artist — from AcoustID if it found
+        // something, otherwise from the file's existing tags.
+
+        final String fTitle  = queryTitle;
+        final String fArtist = queryArtist;
+        final String fAlbum  = queryAlbum;
+        final Double fDur    = queryDur;
+
         List<Callable<ApiResult>> tasks = new ArrayList<>();
 
-        if (musicBrainz != null && title != null) {
-            tasks.add(() -> musicBrainz.search(title, artist, album, duration));
+        if (musicBrainz != null) {
+            tasks.add(() -> musicBrainz.search(fTitle, fArtist, fAlbum, fDur));
         }
-        if (spotify != null && title != null) {
-            tasks.add(() -> spotify.search(title, artist, album));
-        }
-        if (genius != null && title != null) {
-            tasks.add(() -> genius.search(title, artist));
+        if (genius != null) {
+            tasks.add(() -> genius.search(fTitle, fArtist));
         }
 
         if (!tasks.isEmpty()) {
             try {
-                // invokeAll blocks until all tasks complete or the timeout fires
                 List<Future<ApiResult>> futures = executor.invokeAll(
                         tasks, 30, TimeUnit.SECONDS);
 
@@ -122,7 +173,6 @@ public final class ApiAggregator {
                         results.add(r);
                         log(r);
                     } catch (Exception e) {
-                        // Individual task failed — log and continue
                         System.err.println("[Aggregator] Task failed: " + e.getMessage());
                     }
                 }
@@ -135,21 +185,16 @@ public final class ApiAggregator {
         return sorted(results);
     }
 
-    /**
-     * Convenience overload for when no audio file path is available —
-     * skips AcoustID and queries the text-based APIs only.
-     */
+    //Convenience overload — skips AcoustID and queries text-based APIs only.
+    // Used when re-querying after AI transcription (no audio file needed).
+
     public List<ApiResult> query(TrackMetadata existingMetadata) {
         return query(null, existingMetadata);
     }
 
-    /**
-     * Return the single best {@link ApiResult} from a list, or an empty
-     * result if the list is empty or contains no usable results.
-     *
-     * <p>This is a utility method — the full scoring system will do more
-     * sophisticated selection, but this is useful for simple cases or testing.
-     */
+    //Return the single best ApiResult from a list, or an empty result
+    // if the list is empty or contains no usable results.
+
     public static ApiResult best(List<ApiResult> results) {
         return results.stream()
                 .filter(ApiResult::isUsable)
@@ -157,7 +202,6 @@ public final class ApiAggregator {
                 .orElse(ApiResult.empty("none"));
     }
 
-    /** Shut down the thread pool — call this when the aggregator is no longer needed. */
     public void shutdown() {
         executor.shutdown();
     }
@@ -166,7 +210,7 @@ public final class ApiAggregator {
     // Internal helpers
     // ------------------------------------------------------------------
 
-    /** Sort results: usable results first (by confidence desc), errors/empties last. */
+    // Usable results first (by confidence desc), errors/empties last
     private static List<ApiResult> sorted(List<ApiResult> results) {
         return results.stream()
                 .sorted(Comparator
@@ -195,28 +239,18 @@ public final class ApiAggregator {
     public static final class Builder {
         private AcoustIdClient    acoustId;
         private MusicBrainzClient musicBrainz;
-        private SpotifyClient     spotify;
         private GeniusClient      genius;
         private double            shortCircuitThreshold = 0.95;
 
-        /** Enable AcoustID fingerprint lookup. */
         public Builder acoustId(AcoustIdClient c)       { this.acoustId     = c; return this; }
-        /** Enable MusicBrainz text search. */
         public Builder musicBrainz(MusicBrainzClient c) { this.musicBrainz  = c; return this; }
-        /** Enable Spotify search. */
-        public Builder spotify(SpotifyClient c)         { this.spotify       = c; return this; }
-        /** Enable Genius lyrics search. */
         public Builder genius(GeniusClient c)           { this.genius        = c; return this; }
 
-        /**
-         * If any API returns confidence >= this value, skip the remaining
-         * APIs and return immediately. Default 0.95.
-         * Set to a value > 1.0 to disable short-circuiting.
-         */
+        // Set > 1.0 to disable short-circuiting. Default 0.95.
         public Builder shortCircuitThreshold(double t)  { this.shortCircuitThreshold = t; return this; }
 
         public ApiAggregator build() {
-            if (acoustId == null && musicBrainz == null && spotify == null && genius == null)
+            if (acoustId == null && musicBrainz == null && genius == null)
                 throw new IllegalStateException("At least one API client must be configured");
             return new ApiAggregator(this);
         }
